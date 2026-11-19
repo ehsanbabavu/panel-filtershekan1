@@ -42,6 +42,15 @@ async function initializeDatabase() {
         );
         CREATE INDEX IF NOT EXISTS chat_messages_created_at_idx ON chat_messages(created_at);
       `);
+      await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT');
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS app_user_sessions (
+          token TEXT PRIMARY KEY,
+          user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          expires_at TIMESTAMPTZ NOT NULL
+        )
+      `);
       const username = process.env.ADMIN_USERNAME || 'ehsan';
       const passwordHash = await bcrypt.hash(process.env.ADMIN_PASSWORD || '232111Eee@', 10);
       await pool.query(
@@ -74,6 +83,11 @@ function reply(res: any, status: number, data: unknown) {
 }
 
 export default async function handler(req: any, res: any) {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  if (req.method === 'OPTIONS') return res.status(204).end();
+
   try {
     await initializeDatabase();
     const pathname = new URL(req.url || '/', 'http://localhost').pathname.replace(/\/+$/, '') || '/';
@@ -82,6 +96,77 @@ export default async function handler(req: any, res: any) {
     if (pathname === '/api/health' && method === 'GET') {
       await pool.query('SELECT 1');
       return reply(res, 200, { status: 'ok', database: 'connected' });
+    }
+
+    if (pathname === '/api/mobile/register' && method === 'POST') {
+      const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
+      const name = String(body.name || '').trim();
+      const username = String(body.identity || '').trim().toLowerCase();
+      const password = body.password;
+      if (name.length < 2 || name.length > 80) {
+        return reply(res, 400, { message: 'نام باید بین ۲ تا ۸۰ نویسه باشد.' });
+      }
+      if (username.length < 3 || username.length > 254 || !/^[a-z0-9._@+-]+$/.test(username)) {
+        return reply(res, 400, { message: 'ایمیل یا نام کاربری معتبر وارد کنید.' });
+      }
+      if (typeof password !== 'string' || password.length < 8 || password.length > 128) {
+        return reply(res, 400, { message: 'رمز عبور باید حداقل ۸ نویسه باشد.' });
+      }
+      try {
+        const passwordHash = await bcrypt.hash(password, 10);
+        const created = await pool.query<{ id: string; name: string; username: string }>(
+          `INSERT INTO users (name, username, status, plan, last_seen, password_hash)
+           VALUES ($1, $2, 'آفلاین', 'آزمایشی', 'هم‌اکنون', $3)
+           RETURNING id, name, username`,
+          [name, username, passwordHash],
+        );
+        const user = created.rows[0];
+        const token = crypto.randomUUID();
+        await pool.query(
+          "INSERT INTO app_user_sessions (token, user_id, expires_at) VALUES ($1, $2, NOW() + INTERVAL '30 days')",
+          [token, user.id],
+        );
+        return reply(res, 201, { token, id: user.id, name: user.name, username: user.username });
+      } catch (error: any) {
+        if (error?.code === '23505') {
+          return reply(res, 409, { message: 'این ایمیل یا نام کاربری قبلاً ثبت شده است.' });
+        }
+        throw error;
+      }
+    }
+
+    if (pathname === '/api/mobile/login' && method === 'POST') {
+      const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
+      const username = String(body.identity || '').trim().toLowerCase();
+      const password = body.password;
+      const found = await pool.query<{ id: string; name: string; username: string; password_hash: string | null }>(
+        'SELECT id, name, username, password_hash FROM users WHERE username = $1',
+        [username],
+      );
+      const user = found.rows[0];
+      if (typeof password !== 'string' || !user?.password_hash || !(await bcrypt.compare(password, user.password_hash))) {
+        return reply(res, 401, { message: 'ایمیل/نام کاربری یا رمز عبور اشتباه است.' });
+      }
+      const token = crypto.randomUUID();
+      await pool.query(
+        "INSERT INTO app_user_sessions (token, user_id, expires_at) VALUES ($1, $2, NOW() + INTERVAL '30 days')",
+        [token, user.id],
+      );
+      await pool.query("UPDATE users SET status = 'آنلاین', last_seen = 'هم‌اکنون' WHERE id = $1", [user.id]);
+      return reply(res, 200, { token, id: user.id, name: user.name, username: user.username });
+    }
+
+    if (pathname === '/api/mobile/me' && method === 'GET') {
+      const token = String(req.headers?.authorization || '').replace(/^Bearer\\s+/i, '');
+      if (!token) return reply(res, 401, { message: 'برای ادامه وارد شوید.' });
+      const result = await pool.query<{ id: string; name: string; username: string }>(
+        `SELECT u.id, u.name, u.username FROM app_user_sessions s
+         JOIN users u ON u.id = s.user_id
+         WHERE s.token = $1 AND s.expires_at > NOW()`,
+        [token],
+      );
+      if (!result.rows[0]) return reply(res, 401, { message: 'نشست شما منقضی شده است.' });
+      return reply(res, 200, result.rows[0]);
     }
 
     if (pathname === '/api/login' && method === 'POST') {
