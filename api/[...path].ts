@@ -48,9 +48,11 @@ async function initializeDatabase() {
           token TEXT PRIMARY KEY,
           user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
           created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-          expires_at TIMESTAMPTZ NOT NULL
+          expires_at TIMESTAMPTZ
         )
       `);
+      await pool.query('ALTER TABLE app_user_sessions ALTER COLUMN expires_at DROP NOT NULL');
+      await pool.query('UPDATE app_user_sessions SET expires_at = NULL WHERE expires_at IS NOT NULL');
       const username = process.env.ADMIN_USERNAME || 'ehsan';
       const passwordHash = await bcrypt.hash(process.env.ADMIN_PASSWORD || '232111Eee@', 10);
       await pool.query(
@@ -125,7 +127,7 @@ export default async function handler(req: any, res: any) {
         const user = created.rows[0];
         const token = crypto.randomUUID();
         await pool.query(
-          "INSERT INTO app_user_sessions (token, user_id, expires_at) VALUES ($1, $2, NOW() + INTERVAL '30 days')",
+          'INSERT INTO app_user_sessions (token, user_id) VALUES ($1, $2)',
           [token, user.id],
         );
         return reply(res, 201, { token, id: user.id, name: user.name, username: user.username });
@@ -151,7 +153,7 @@ export default async function handler(req: any, res: any) {
       }
       const token = crypto.randomUUID();
       await pool.query(
-        "INSERT INTO app_user_sessions (token, user_id, expires_at) VALUES ($1, $2, NOW() + INTERVAL '30 days')",
+        'INSERT INTO app_user_sessions (token, user_id) VALUES ($1, $2)',
         [token, user.id],
       );
       await pool.query("UPDATE users SET status = 'آنلاین', last_seen = 'هم‌اکنون' WHERE id = $1", [user.id]);
@@ -165,7 +167,7 @@ export default async function handler(req: any, res: any) {
         await pool.query(
           `UPDATE users SET status = 'آفلاین'
            WHERE password_hash IS NOT NULL
-             AND id NOT IN (SELECT user_id FROM app_user_sessions WHERE expires_at > NOW())`,
+             AND id NOT IN (SELECT user_id FROM app_user_sessions WHERE expires_at IS NULL OR expires_at > NOW())`,
         );
       }
       return reply(res, 200, { success: true });
@@ -177,7 +179,7 @@ export default async function handler(req: any, res: any) {
       const result = await pool.query<{ id: string; name: string; username: string }>(
         `SELECT u.id, u.name, u.username FROM app_user_sessions s
          JOIN users u ON u.id = s.user_id
-         WHERE s.token = $1 AND s.expires_at > NOW()`,
+         WHERE s.token = $1 AND (s.expires_at IS NULL OR s.expires_at > NOW())`,
         [token],
       );
       if (!result.rows[0]) return reply(res, 401, { message: 'نشست شما منقضی شده است.' });
