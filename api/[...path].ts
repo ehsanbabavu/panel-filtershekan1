@@ -164,7 +164,8 @@ export default async function handler(req: any, res: any) {
         await pool.query('DELETE FROM app_user_sessions WHERE token = $1', [token]);
         await pool.query(
           `UPDATE users SET status = 'آفلاین'
-           WHERE id NOT IN (SELECT user_id FROM app_user_sessions WHERE expires_at > NOW())`,
+           WHERE password_hash IS NOT NULL
+             AND id NOT IN (SELECT user_id FROM app_user_sessions WHERE expires_at > NOW())`,
         );
       }
       return reply(res, 200, { success: true });
