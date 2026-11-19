@@ -116,7 +116,7 @@ app.post('/api/login', async (req, res, next) => {
 app.use('/api', async (req, res, next) => {
   try {
     await initializeDatabase();
-    const token = req.headers.authorization?.replace(/^Bearer\\s+/i, '');
+    const token = req.headers.authorization?.replace(/^Bearer\s+/i, '');
     if (!token) return res.status(401).json({ message: 'برای ادامه وارد شوید.' });
     const result = await pool.query(
       'SELECT 1 FROM sessions WHERE token = $1 AND expires_at > NOW()',

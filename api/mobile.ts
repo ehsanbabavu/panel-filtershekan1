@@ -108,7 +108,7 @@ export default async function handler(req: any, res: any) {
       if (name.length < 2 || name.length > 80) {
         return reply(res, 400, { message: 'نام باید بین ۲ تا ۸۰ نویسه باشد.' });
       }
-      const validEmail = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(username);
+      const validEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(username);
       const validUsername = username.length <= 64 && /^[a-z0-9._+-]+$/.test(username);
       if (username.length < 3 || username.length > 254 || (!validEmail && !validUsername)) {
         return reply(res, 400, { message: 'ایمیل یا نام کاربری معتبر وارد کنید.' });
@@ -160,7 +160,7 @@ export default async function handler(req: any, res: any) {
       return reply(res, 200, { token, id: user.id, name: user.name, username: user.username });
     }
 
-    const token = String(req.headers?.authorization || '').replace(/^Bearer\\s+/i, '');
+    const token = String(req.headers?.authorization || '').replace(/^Bearer\s+/i, '');
     if (action === 'me' && method === 'GET') {
       if (!token) return reply(res, 401, { message: 'برای ادامه وارد شوید.' });
       const result = await pool.query<{ id: string; name: string; username: string }>(

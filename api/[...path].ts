@@ -108,7 +108,7 @@ export default async function handler(req: any, res: any) {
       if (name.length < 2 || name.length > 80) {
         return reply(res, 400, { message: 'نام باید بین ۲ تا ۸۰ نویسه باشد.' });
       }
-      const validEmail = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(username);
+      const validEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(username);
       const validUsername = username.length <= 64 && /^[a-z0-9._+-]+$/.test(username);
       if (username.length < 3 || username.length > 254 || (!validEmail && !validUsername)) {
         return reply(res, 400, { message: 'ایمیل یا نام کاربری معتبر وارد کنید.' });
@@ -161,7 +161,7 @@ export default async function handler(req: any, res: any) {
     }
 
     if (pathname === '/api/mobile/logout' && method === 'POST') {
-      const token = String(req.headers?.authorization || '').replace(/^Bearer\\s+/i, '');
+      const token = String(req.headers?.authorization || '').replace(/^Bearer\s+/i, '');
       if (token) {
         await pool.query('DELETE FROM app_user_sessions WHERE token = $1', [token]);
         await pool.query(
@@ -174,7 +174,7 @@ export default async function handler(req: any, res: any) {
     }
 
     if (pathname === '/api/mobile/me' && method === 'GET') {
-      const token = String(req.headers?.authorization || '').replace(/^Bearer\\s+/i, '');
+      const token = String(req.headers?.authorization || '').replace(/^Bearer\s+/i, '');
       if (!token) return reply(res, 401, { message: 'برای ادامه وارد شوید.' });
       const result = await pool.query<{ id: string; name: string; username: string }>(
         `SELECT u.id, u.name, u.username FROM app_user_sessions s
@@ -234,7 +234,7 @@ export default async function handler(req: any, res: any) {
       const username = String(body.username || '').trim().toLowerCase();
       const password = body.password;
       const plan = String(body.plan || 'آزمایشی');
-      const validEmail = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(username);
+      const validEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(username);
       const validUsername = username.length <= 64 && /^[a-z0-9._+-]+$/.test(username);
       if (name.length < 2 || name.length > 80) return reply(res, 400, { message: 'نام باید بین ۲ تا ۸۰ نویسه باشد.' });
       if (username.length < 3 || username.length > 254 || (!validEmail && !validUsername)) {
@@ -267,9 +267,9 @@ export default async function handler(req: any, res: any) {
       const status = String(body.status || '');
       const plan = String(body.plan || '');
       const password = typeof body.password === 'string' ? body.password : '';
-      const validEmail = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(username);
+      const validEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(username);
       const validUsername = username.length <= 64 && /^[a-z0-9._+-]+$/.test(username);
-      if (!/^\\d+$/.test(id)) return reply(res, 400, { message: 'شناسه کاربر معتبر نیست.' });
+      if (!/^\d+$/.test(id)) return reply(res, 400, { message: 'شناسه کاربر معتبر نیست.' });
       if (name.length < 2 || name.length > 80) return reply(res, 400, { message: 'نام باید بین ۲ تا ۸۰ نویسه باشد.' });
       if (username.length < 3 || username.length > 254 || (!validEmail && !validUsername)) {
         return reply(res, 400, { message: 'ایمیل یا نام کاربری معتبر وارد کنید.' });
@@ -299,7 +299,7 @@ export default async function handler(req: any, res: any) {
 
     if (pathname === '/api/users' && method === 'DELETE') {
       const id = String(req.query?.id || '');
-      if (!/^\\d+$/.test(id)) return reply(res, 400, { message: 'شناسه کاربر معتبر نیست.' });
+      if (!/^\d+$/.test(id)) return reply(res, 400, { message: 'شناسه کاربر معتبر نیست.' });
       const deleted = await pool.query('DELETE FROM users WHERE id = $1 RETURNING id', [id]);
       if (!deleted.rows[0]) return reply(res, 404, { message: 'کاربر پیدا نشد.' });
       return reply(res, 200, { success: true, id: deleted.rows[0].id });
