@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Activity, ArrowDownLeft, ArrowUpLeft, Bell, Check, ChevronDown, CircleHelp, Command, CreditCard, LayoutDashboard, LogOut, Menu, MessageCircle, MoreHorizontal, Pencil, Plus, Search, Send, Settings, ShieldCheck, Trash2, Users, Wifi, X } from 'lucide-react';
 
-type User = { id: string; name: string; username: string; status: string; plan: string; lastSeen: string };\ntype UserForm = { id?: string; name: string; username: string; status: string; plan: string; password: string };\nconst newUserForm: UserForm = { name: '', username: '', status: 'آفلاین', plan: 'آزمایشی', password: '' };
+type User = { id: string; name: string; username: string; status: string; plan: string; lastSeen: string };
+type UserForm = { id?: string; name: string; username: string; status: string; plan: string; password: string };
+const newUserForm: UserForm = { name: '', username: '', status: 'آفلاین', plan: 'آزمایشی', password: '' };
 type Message = { author: string; text: string; time: string };
 const initialMessages: Message[] = [
   { author: 'شما', text: 'سلام، وقت بخیر! وضعیت اتصال کاربران چطور است؟', time: '۱۰:۲۴' },
