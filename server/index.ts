@@ -1,21 +1,32 @@
 import express from 'express';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import bcrypt from 'bcryptjs';
 import pg from 'pg';
 
 const { Pool } = pg;
-
 const app = express();
 const port = Number(process.env.PORT || 3001);
 const adminName = process.env.ADMIN_USERNAME || 'ehsan';
-const adminHash = bcrypt.hashSync(process.env.ADMIN_PASSWORD || '232111Eee@', 10);
+const adminPassword = process.env.ADMIN_PASSWORD || '232111Eee@';
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
+  connectionString: process.env.DATABASE_URL || process.env.POSTGRES_URL,
   ssl: process.env.DATABASE_SSL === 'true' ? { rejectUnauthorized: false } : undefined,
 });
 
-async function initializeDatabase() {
+let initialization: Promise<void> | undefined;
+
+export function initializeDatabase() {
+  if (!initialization) initialization = initializeDatabaseOnce().catch((error) => {
+    initialization = undefined;
+    throw error;
+  });
+  return initialization;
+}
+
+async function initializeDatabaseOnce() {
+  if (!process.env.DATABASE_URL && !process.env.POSTGRES_URL) {
+    throw new Error('DATABASE_URL یا POSTGRES_URL تنظیم نشده است.');
+  }
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS admins (
       username TEXT PRIMARY KEY,
@@ -46,58 +57,76 @@ async function initializeDatabase() {
     CREATE INDEX IF NOT EXISTS chat_messages_created_at_idx ON chat_messages(created_at);
   `);
 
+  const adminHash = await bcrypt.hash(adminPassword, 10);
   await pool.query(
     `INSERT INTO admins (username, password_hash) VALUES ($1, $2)
      ON CONFLICT (username) DO NOTHING`,
     [adminName, adminHash],
   );
+
   const usersCount = await pool.query<{ count: string }>('SELECT COUNT(*)::text AS count FROM users');
   if (usersCount.rows[0]?.count === '0') {
-    await pool.query(
-      `INSERT INTO users (name, username, status, plan, last_seen) VALUES
+    await pool.query(`
+      INSERT INTO users (name, username, status, plan, last_seen) VALUES
        ('آرمان رضایی', 'arman.r', 'آنلاین', 'حرفه‌ای', 'هم‌اکنون'),
        ('سارا محمدی', 'sara.m', 'آنلاین', 'پایه', 'هم‌اکنون'),
        ('نیما کریمی', 'nima.k', 'آفلاین', 'حرفه‌ای', '۲ ساعت پیش'),
        ('نگار احمدی', 'negar.a', 'آنلاین', 'آزمایشی', 'هم‌اکنون'),
        ('پارسا حیدری', 'parsa.h', 'آفلاین', 'پایه', 'دیروز'),
        ('یلدا موسوی', 'yalda.m', 'آنلاین', 'حرفه‌ای', 'هم‌اکنون')
-       ON CONFLICT (username) DO NOTHING`,
-    );
+       ON CONFLICT (username) DO NOTHING
+    `);
   }
 }
 
 app.use(express.json());
+
+app.get('/api/health', async (_req, res) => {
+  try {
+    await initializeDatabase();
+    await pool.query('SELECT 1');
+    res.json({ status: 'ok', database: 'connected' });
+  } catch (error) {
+    console.error('Health check failed:', error);
+    res.status(503).json({ status: 'error', message: 'اتصال پایگاه داده برقرار نیست.' });
+  }
+});
+
 app.post('/api/login', async (req, res, next) => {
   try {
-  const { username, password } = req.body ?? {};
-  const result = await pool.query<{ password_hash: string }>(
-    'SELECT password_hash FROM admins WHERE username = $1',
-    [username],
-  );
-  if (typeof password !== 'string' || !result.rows[0] || !bcrypt.compareSync(password, result.rows[0].password_hash)) {
-    return res.status(401).json({ message: 'نام کاربری یا رمز عبور اشتباه است.' });
-  }
-  const token = crypto.randomUUID();
-  await pool.query(
-    `INSERT INTO sessions (token, admin_username, expires_at)
-     VALUES ($1, $2, NOW() + INTERVAL '7 days')`,
-    [token, username],
-  );
-  res.json({ token, username });
+    await initializeDatabase();
+    const { username, password } = req.body ?? {};
+    const result = await pool.query<{ password_hash: string }>(
+      'SELECT password_hash FROM admins WHERE username = $1',
+      [username],
+    );
+    if (typeof password !== 'string' || !result.rows[0] || !(await bcrypt.compare(password, result.rows[0].password_hash))) {
+      return res.status(401).json({ message: 'نام کاربری یا رمز عبور اشتباه است.' });
+    }
+    const token = crypto.randomUUID();
+    await pool.query(
+      `INSERT INTO sessions (token, admin_username, expires_at)
+       VALUES ($1, $2, NOW() + INTERVAL '7 days')`,
+      [token, username],
+    );
+    res.json({ token, username });
   } catch (error) { next(error); }
 });
+
 app.use('/api', async (req, res, next) => {
   try {
-  const token = req.headers.authorization?.replace(/^Bearer\s+/i, '');
-  if (!token) return res.status(401).json({ message: 'برای ادامه وارد شوید.' });
-  const result = await pool.query(
-    'SELECT 1 FROM sessions WHERE token = $1 AND expires_at > NOW()',
-    [token],
-  );
-  if (!result.rowCount) return res.status(401).json({ message: 'نشست شما منقضی شده است؛ دوباره وارد شوید.' });
-  next();
+    await initializeDatabase();
+    const token = req.headers.authorization?.replace(/^Bearer\\s+/i, '');
+    if (!token) return res.status(401).json({ message: 'برای ادامه وارد شوید.' });
+    const result = await pool.query(
+      'SELECT 1 FROM sessions WHERE token = $1 AND expires_at > NOW()',
+      [token],
+    );
+    if (!result.rowCount) return res.status(401).json({ message: 'نشست شما منقضی شده است؛ دوباره وارد شوید.' });
+    next();
   } catch (error) { next(error); }
 });
+
 app.get('/api/users', async (_req, res, next) => {
   try {
     const result = await pool.query(
@@ -106,11 +135,13 @@ app.get('/api/users', async (_req, res, next) => {
     res.json(result.rows);
   } catch (error) { next(error); }
 });
+
 app.get('/api/subscriptions', (_req, res) => res.json([
   { name: 'حرفه‌ای', users: 128, price: '۲۹۹٬۰۰۰', color: 'violet', change: '+۱۲٪' },
   { name: 'پایه', users: 86, price: '۱۴۹٬۰۰۰', color: 'blue', change: '+۸٪' },
   { name: 'آزمایشی', users: 34, price: 'رایگان', color: 'amber', change: '+۳٪' },
 ]));
+
 app.get('/api/chat', async (_req, res, next) => {
   try {
     const result = await pool.query(
@@ -120,34 +151,27 @@ app.get('/api/chat', async (_req, res, next) => {
     res.json(result.rows.reverse());
   } catch (error) { next(error); }
 });
+
 app.post('/api/chat', async (req, res, next) => {
   try {
-  const text = String(req.body?.message || '').trim();
-  if (!text) return res.status(400).json({ message: 'پیام خالی است.' });
-  const result = await pool.query(
-    `INSERT INTO chat_messages (author, message) VALUES ('شما', $1)
-     RETURNING id, author, message AS text, created_at AS time`,
-    [text],
-  );
-  res.json(result.rows[0]);
+    const message = String(req.body?.message || '').trim();
+    if (!message) return res.status(400).json({ message: 'پیام خالی است.' });
+    const result = await pool.query(
+      `INSERT INTO chat_messages (author, message) VALUES ('شما', $1)
+       RETURNING id, author, message AS text, created_at AS time`,
+      [message],
+    );
+    res.json(result.rows[0]);
   } catch (error) { next(error); }
 });
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-if (process.env.NODE_ENV === 'production') {
-  app.use(express.static(path.resolve(__dirname, '../dist')));
-  app.get('*', (_req, res) => res.sendFile(path.resolve(__dirname, '../dist/index.html')));
-}
-async function start() {
-  if (!process.env.DATABASE_URL) {
-    throw new Error('DATABASE_URL تنظیم نشده است. آدرس اتصال PostgreSQL را در محیط اجرا قرار دهید.');
-  }
-  await initializeDatabase();
+app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  console.error('API request failed:', error);
+  res.status(500).json({ message: 'خطای داخلی سرور رخ داد.' });
+});
+
+if (!process.env.VERCEL) {
   app.listen(port, () => console.log(`FilterShekan server running on http://localhost:${port}`));
 }
 
-start().catch((error: unknown) => {
-  console.error('Could not start FilterShekan server:', error);
-  process.exit(1);
-});
-
+export default app;
