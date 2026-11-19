@@ -221,9 +221,86 @@ export default async function handler(req: any, res: any) {
 
     if (pathname === '/api/users' && method === 'GET') {
       const users = await pool.query(
-        'SELECT id, name, username, status, plan, last_seen AS "lastSeen" FROM users ORDER BY id',
+        'SELECT id, name, username, status, plan, last_seen AS "lastSeen" FROM users ORDER BY id DESC',
       );
       return reply(res, 200, users.rows);
+    }
+
+    if (pathname === '/api/users' && method === 'POST') {
+      const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
+      const name = String(body.name || '').trim();
+      const username = String(body.username || '').trim().toLowerCase();
+      const password = body.password;
+      const plan = String(body.plan || 'آزمایشی');
+      const validEmail = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(username);
+      const validUsername = username.length <= 64 && /^[a-z0-9._+-]+$/.test(username);
+      if (name.length < 2 || name.length > 80) return reply(res, 400, { message: 'نام باید بین ۲ تا ۸۰ نویسه باشد.' });
+      if (username.length < 3 || username.length > 254 || (!validEmail && !validUsername)) {
+        return reply(res, 400, { message: 'ایمیل یا نام کاربری معتبر وارد کنید.' });
+      }
+      if (typeof password !== 'string' || password.length < 8 || password.length > 128) {
+        return reply(res, 400, { message: 'رمز عبور باید حداقل ۸ نویسه باشد.' });
+      }
+      if (!['آزمایشی', 'پایه', 'حرفه‌ای'].includes(plan)) return reply(res, 400, { message: 'نوع اشتراک معتبر نیست.' });
+      try {
+        const passwordHash = await bcrypt.hash(password, 10);
+        const created = await pool.query(
+          `INSERT INTO users (name, username, status, plan, last_seen, password_hash)
+           VALUES ($1, $2, 'آفلاین', $3, 'هنوز وارد نشده', $4)
+           RETURNING id, name, username, status, plan, last_seen AS "lastSeen"`,
+          [name, username, plan, passwordHash],
+        );
+        return reply(res, 201, created.rows[0]);
+      } catch (error: any) {
+        if (error?.code === '23505') return reply(res, 409, { message: 'این ایمیل یا نام کاربری قبلاً ثبت شده است.' });
+        throw error;
+      }
+    }
+
+    if (pathname === '/api/users' && method === 'PATCH') {
+      const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
+      const id = String(req.query?.id || body.id || '');
+      const name = String(body.name || '').trim();
+      const username = String(body.username || '').trim().toLowerCase();
+      const status = String(body.status || '');
+      const plan = String(body.plan || '');
+      const password = typeof body.password === 'string' ? body.password : '';
+      const validEmail = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(username);
+      const validUsername = username.length <= 64 && /^[a-z0-9._+-]+$/.test(username);
+      if (!/^\\d+$/.test(id)) return reply(res, 400, { message: 'شناسه کاربر معتبر نیست.' });
+      if (name.length < 2 || name.length > 80) return reply(res, 400, { message: 'نام باید بین ۲ تا ۸۰ نویسه باشد.' });
+      if (username.length < 3 || username.length > 254 || (!validEmail && !validUsername)) {
+        return reply(res, 400, { message: 'ایمیل یا نام کاربری معتبر وارد کنید.' });
+      }
+      if (!['آنلاین', 'آفلاین'].includes(status)) return reply(res, 400, { message: 'وضعیت کاربر معتبر نیست.' });
+      if (!['آزمایشی', 'پایه', 'حرفه‌ای'].includes(plan)) return reply(res, 400, { message: 'نوع اشتراک معتبر نیست.' });
+      if (password && (password.length < 8 || password.length > 128)) {
+        return reply(res, 400, { message: 'رمز تازه باید حداقل ۸ نویسه باشد.' });
+      }
+      try {
+        const passwordHash = password ? await bcrypt.hash(password, 10) : null;
+        const updated = await pool.query(
+          `UPDATE users
+           SET name = $1, username = $2, status = $3, plan = $4,
+               password_hash = COALESCE($5, password_hash)
+           WHERE id = $6
+           RETURNING id, name, username, status, plan, last_seen AS "lastSeen"`,
+          [name, username, status, plan, passwordHash, id],
+        );
+        if (!updated.rows[0]) return reply(res, 404, { message: 'کاربر پیدا نشد.' });
+        return reply(res, 200, updated.rows[0]);
+      } catch (error: any) {
+        if (error?.code === '23505') return reply(res, 409, { message: 'این ایمیل یا نام کاربری قبلاً ثبت شده است.' });
+        throw error;
+      }
+    }
+
+    if (pathname === '/api/users' && method === 'DELETE') {
+      const id = String(req.query?.id || '');
+      if (!/^\\d+$/.test(id)) return reply(res, 400, { message: 'شناسه کاربر معتبر نیست.' });
+      const deleted = await pool.query('DELETE FROM users WHERE id = $1 RETURNING id', [id]);
+      if (!deleted.rows[0]) return reply(res, 404, { message: 'کاربر پیدا نشد.' });
+      return reply(res, 200, { success: true, id: deleted.rows[0].id });
     }
 
     if (pathname === '/api/chat' && method === 'GET') {
