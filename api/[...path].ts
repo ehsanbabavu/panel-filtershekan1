@@ -106,7 +106,9 @@ export default async function handler(req: any, res: any) {
       if (name.length < 2 || name.length > 80) {
         return reply(res, 400, { message: 'نام باید بین ۲ تا ۸۰ نویسه باشد.' });
       }
-      if (username.length < 3 || username.length > 254 || !/^[a-z0-9._@+-]+$/.test(username)) {
+      const validEmail = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(username);
+      const validUsername = username.length <= 64 && /^[a-z0-9._+-]+$/.test(username);
+      if (username.length < 3 || username.length > 254 || (!validEmail && !validUsername)) {
         return reply(res, 400, { message: 'ایمیل یا نام کاربری معتبر وارد کنید.' });
       }
       if (typeof password !== 'string' || password.length < 8 || password.length > 128) {
@@ -154,6 +156,18 @@ export default async function handler(req: any, res: any) {
       );
       await pool.query("UPDATE users SET status = 'آنلاین', last_seen = 'هم‌اکنون' WHERE id = $1", [user.id]);
       return reply(res, 200, { token, id: user.id, name: user.name, username: user.username });
+    }
+
+    if (pathname === '/api/mobile/logout' && method === 'POST') {
+      const token = String(req.headers?.authorization || '').replace(/^Bearer\\s+/i, '');
+      if (token) {
+        await pool.query('DELETE FROM app_user_sessions WHERE token = $1', [token]);
+        await pool.query(
+          `UPDATE users SET status = 'آفلاین'
+           WHERE id NOT IN (SELECT user_id FROM app_user_sessions WHERE expires_at > NOW())`,
+        );
+      }
+      return reply(res, 200, { success: true });
     }
 
     if (pathname === '/api/mobile/me' && method === 'GET') {
