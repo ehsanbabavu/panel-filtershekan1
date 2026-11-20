@@ -86,6 +86,8 @@ export async function handleMobileRequest(action: string, req: any, res: any, da
     const inserted = await database.query<any>(`INSERT INTO chat_messages(user_id,sender_role,author,message)
       VALUES($1,'user',$2,$3) RETURNING id,author,message AS text,created_at AS time,sender_role AS "senderRole"`,
     [session.rows[0].userId, session.rows[0].name, message]);
+    if (!inserted.rows[0]) return reply(res, 500, { message: 'پیام در پایگاه داده ثبت نشد.' });
+    console.info('Mobile support message stored', { userId: String(session.rows[0].userId), messageId: String(inserted.rows[0].id) });
     return reply(res, 201, inserted.rows[0]);
   }
   if (action === 'proxy' && method === 'GET') {
@@ -162,7 +164,7 @@ export function createMobileHandler(database: MobileDatabase, initialize: () => 
       await initialize();
       return await handleMobileRequest(action, req, res, database);
     } catch (error) {
-      console.error('Mobile account API failed:', error);
+      console.error('Mobile account API failed:', { action, method: String(req.method || 'GET').toUpperCase(), error });
       return reply(res, 503, { message: 'خطا در اتصال به پایگاه داده یا اجرای درخواست.' });
     }
   };
