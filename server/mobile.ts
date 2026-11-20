@@ -1,5 +1,5 @@
 import bcrypt from 'bcryptjs';
-import { reportPresence, type MobileDatabase } from './presence';
+import { reportPresence, type MobileDatabase } from './presence.js';
 
 function reply(res: any, status: number, body: unknown) {
   return res.status(status).json(body);

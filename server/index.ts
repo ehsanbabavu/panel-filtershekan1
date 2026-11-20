@@ -1,12 +1,12 @@
 import express from 'express';
 import bcrypt from 'bcryptjs';
-import { initializeDatabase, pool } from './database';
-import { createMobileHandler } from './mobile';
-import { selectUsers } from './presence';
+import { initializeDatabase, pool } from './database.js';
+import { createMobileHandler } from './mobile.js';
+import { selectUsers } from './presence.js';
 
 const app = express();
 const port = Number(process.env.PORT || 3001);
-export { initializeDatabase } from './database';
+export { initializeDatabase } from './database.js';
 
 app.use(express.json());
 app.all(['/api/mobile', '/api/mobile/:action'], createMobileHandler(pool, initializeDatabase));

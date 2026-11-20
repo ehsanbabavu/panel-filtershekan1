@@ -1,7 +1,7 @@
 import bcrypt from 'bcryptjs';
-import { initializeDatabase, pool } from '../server/database';
-import { handleMobileRequest } from '../server/mobile';
-import { selectUsers, type MobileDatabase } from '../server/presence';
+import { initializeDatabase, pool } from '../server/database.js';
+import { handleMobileRequest } from '../server/mobile.js';
+import { selectUsers, type MobileDatabase } from '../server/presence.js';
 
 function reply(res: any, status: number, data: unknown) {
   res.status(status).json(data);
