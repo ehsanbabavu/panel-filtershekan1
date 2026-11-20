@@ -73,16 +73,16 @@ export async function handleMobileRequest(action: string, req: any, res: any, da
   const token = String(req.headers?.authorization || '').replace(/^Bearer\s+/i, '');
   if (action === 'usage' && method === 'GET') {
     if (!token) return reply(res, 401, { message: 'برای ادامه وارد شوید.' });
-    const result = await database.query<any>(`SELECT u.id AS user_id,u.name,u.username,u.plan,u.subscription_started_at,
+    const result = await database.query<any>(`SELECT u.id AS user_id,u.name,u.username,u.plan,u.blocked,u.subscription_started_at,
       u.subscription_expires_at,u.subscription_quota_bytes,u.subscription_used_bytes
       FROM app_user_sessions s JOIN users u ON u.id=s.user_id
       WHERE s.token=$1 AND (s.expires_at IS NULL OR s.expires_at>NOW())`, [token]);
     if (!result.rows[0]) return reply(res, 401, { message: 'نشست شما منقضی شده است.' });
     const row=result.rows[0], quota=BigInt(row.subscription_quota_bytes||0), used=BigInt(row.subscription_used_bytes||0);
-    const canConnect=Boolean(row.subscription_expires_at&&new Date(row.subscription_expires_at).getTime()>Date.now()&&used<quota);
+    const canConnect=Boolean(!row.blocked&&row.subscription_expires_at&&new Date(row.subscription_expires_at).getTime()>Date.now()&&used<quota);
     return reply(res,200,{id:row.user_id,name:row.name,username:row.username,plan:row.plan,
       subscriptionStartedAt:row.subscription_started_at,subscriptionExpiresAt:row.subscription_expires_at,
-      subscriptionQuotaBytes:quota.toString(),subscriptionUsedBytes:used.toString(),canConnect,exhausted:!canConnect});
+      subscriptionQuotaBytes:quota.toString(),subscriptionUsedBytes:used.toString(),blocked:Boolean(row.blocked),canConnect,exhausted:!canConnect&&!row.blocked});
   }
   if (action === 'presence' && method === 'POST') {
     if (!token) return reply(res, 401, { message: 'برای ادامه وارد شوید.' });
@@ -94,7 +94,7 @@ export async function handleMobileRequest(action: string, req: any, res: any, da
     if (cumulativeBytes !== undefined && (!Number.isSafeInteger(cumulativeBytes) || cumulativeBytes < 0)) return reply(res,400,{message:'گزارش مصرف معتبر نیست.'});
     const result = await reportPresence(database, token, body.connected, body.sequence, cumulativeBytes);
     if (!result.authorized) return reply(res, 401, { message: 'نشست شما منقضی شده است.' });
-    if (result.denied) return reply(res,403,{...result.subscription,message:'حجم یا مهلت اشتراک تمام شده است.'});
+    if (result.denied) return reply(res,403,{...result.subscription,message:result.subscription?.blocked?'دسترسی این حساب توسط مدیر مسدود شده است.':'حجم یا مهلت اشتراک تمام شده است.'});
     if (result.subscription) return reply(res,200,{...result.subscription,success:true,applied:result.applied});
     return reply(res, 200, { success: true, applied: result.applied });
   }

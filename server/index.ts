@@ -72,6 +72,25 @@ app.get('/api/subscriptions', async (_req, res, next) => {
   catch(error){next(error);}
 });
 
+app.get('/api/user-subscriptions', async (_req,res,next)=>{try{
+  const result=await pool.query(`SELECT u.id AS "userId",u.name AS "userName",u.username,p.name AS "planName",
+    u.subscription_started_at AS "startedAt",u.subscription_expires_at AS "expiresAt",
+    u.subscription_quota_bytes AS "quotaBytes",u.subscription_used_bytes AS "usedBytes",u.blocked,
+    (u.subscription_expires_at>NOW() AND u.subscription_used_bytes<u.subscription_quota_bytes) AS active
+    FROM users u LEFT JOIN subscription_plans p ON p.name=u.plan
+    WHERE u.subscription_started_at IS NOT NULL ORDER BY u.subscription_started_at DESC`);
+  res.json(result.rows);
+}catch(error){next(error);}});
+
+app.post('/api/users/block',async(req,res,next)=>{try{
+  const id=Number(req.body?.userId),blocked=req.body?.blocked;
+  if(!Number.isSafeInteger(id)||id<1||typeof blocked!=='boolean')return res.status(400).json({message:'شناسه کاربر یا وضعیت مسدودسازی معتبر نیست.'});
+  const result=await pool.query('UPDATE users SET blocked=$2 WHERE id=$1 RETURNING id',[id,blocked]);
+  if(!result.rows[0])return res.status(404).json({message:'کاربر پیدا نشد.'});
+  if(blocked)await pool.query('UPDATE app_user_sessions SET vpn_connected=FALSE,vpn_heartbeat_at=NULL WHERE user_id=$1',[id]);
+  res.json({success:true,userId:id,blocked});
+}catch(error){next(error);}});
+
 app.post('/api/subscriptions', async (req,res,next)=>{ try {
   const {name,description='',priceIrr,quotaBytes,durationDays,simultaneousDevices=1,features=[],active=true}=req.body??{};
   if(typeof name!=='string'||name.trim().length<2||name.trim().length>80||typeof description!=='string'||!Number.isSafeInteger(Number(priceIrr))||Number(priceIrr)<0||!Number.isSafeInteger(Number(quotaBytes))||Number(quotaBytes)<1||!Number.isInteger(Number(durationDays))||Number(durationDays)<1||!Number.isInteger(Number(simultaneousDevices))||Number(simultaneousDevices)<1||!Array.isArray(features)||features.some((v:unknown)=>typeof v!=='string')) return res.status(400).json({message:'مشخصات اشتراک معتبر نیست.'});

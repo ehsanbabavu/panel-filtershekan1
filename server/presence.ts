@@ -6,7 +6,7 @@ export type MobileDatabase = Pick<Pool, 'query' | 'connect'>;
 // Derive presence on every read so crashes and lost disconnect requests expire
 // even when no background job is running on a serverless deployment.
 const userFields = `
-  u.id, u.name, u.username, u.plan,
+  u.id, u.name, u.username, u.plan, u.blocked,
   CASE WHEN EXISTS (
     SELECT 1 FROM app_user_sessions s
     WHERE s.user_id = u.id
@@ -29,7 +29,7 @@ export async function reportPresence(database: MobileDatabase, token: string, co
   try {
     await client.query('BEGIN');
     const session = await client.query<any>(
-      `SELECT s.user_id, s.vpn_sequence, u.name, u.username, u.plan, u.subscription_started_at,
+      `SELECT s.user_id, s.vpn_sequence, u.name, u.username, u.plan, u.blocked, u.subscription_started_at,
         u.subscription_expires_at, u.subscription_quota_bytes, u.subscription_used_bytes
        FROM app_user_sessions s JOIN users u ON u.id=s.user_id
        WHERE s.token = $1 AND (s.expires_at IS NULL OR s.expires_at > NOW()) FOR UPDATE OF s,u`,
@@ -48,10 +48,10 @@ export async function reportPresence(database: MobileDatabase, token: string, co
     let used = BigInt(row.subscription_used_bytes || 0);
     const quota = BigInt(row.subscription_quota_bytes || 0);
     const active = Boolean(row.subscription_expires_at && new Date(row.subscription_expires_at).getTime() > Date.now());
-    if (connected && (!active || used >= quota)) {
+    if (connected && (row.blocked || !active || used >= quota)) {
       await client.query(`UPDATE app_user_sessions SET vpn_connected=FALSE,vpn_heartbeat_at=NULL,vpn_sequence=$2 WHERE token=$1`, [token,sequence]);
       await client.query('COMMIT');
-      return { authorized: true, applied: false, denied: true, subscription: { ...subscriptionOf(row), canConnect: false, exhausted: true } };
+      return { authorized: true, applied: false, denied: true, subscription: { ...subscriptionOf(row), canConnect: false } };
     }
     if (connected && cumulativeBytes !== undefined) {
       const prior = await client.query<any>('SELECT cumulative_bytes FROM mobile_usage_reports WHERE user_id=$1 AND token=$2 FOR UPDATE', [row.user_id, token]);
@@ -67,7 +67,7 @@ export async function reportPresence(database: MobileDatabase, token: string, co
       await client.query('UPDATE users SET subscription_used_bytes=$1 WHERE id=$2', [used.toString(),row.user_id]);
       row.subscription_used_bytes = used.toString();
     }
-    const canConnect = active && used < quota;
+    const canConnect = !row.blocked && active && used < quota;
     await client.query(
       `UPDATE app_user_sessions
        SET vpn_connected = $2, vpn_heartbeat_at = CASE WHEN $2 THEN clock_timestamp() ELSE NULL END,
@@ -90,8 +90,8 @@ export async function reportPresence(database: MobileDatabase, token: string, co
 
 function subscriptionOf(row: any) {
   const quota = BigInt(row.subscription_quota_bytes || 0), used = BigInt(row.subscription_used_bytes || 0);
-  const canConnect = Boolean(row.subscription_expires_at && new Date(row.subscription_expires_at).getTime() > Date.now() && used < quota);
+  const canConnect = Boolean(!row.blocked && row.subscription_expires_at && new Date(row.subscription_expires_at).getTime() > Date.now() && used < quota);
   return { id: row.user_id, name: row.name, username: row.username, plan: row.plan,
     subscriptionStartedAt: row.subscription_started_at, subscriptionExpiresAt: row.subscription_expires_at,
-    subscriptionQuotaBytes: quota.toString(), subscriptionUsedBytes: used.toString(), canConnect, exhausted: !canConnect };
+    subscriptionQuotaBytes: quota.toString(), subscriptionUsedBytes: used.toString(), blocked: Boolean(row.blocked), canConnect, exhausted: !canConnect && !row.blocked };
 }

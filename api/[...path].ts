@@ -56,6 +56,28 @@ return async function handler(req: any, res: any) {
     );
     if (!session.rowCount) return reply(res, 401, { message: 'نشست شما منقضی شده است؛ دوباره وارد شوید.' });
 
+    if (pathname === '/api/user-subscriptions' && method === 'GET') {
+      const subscriptions = await database.query(`SELECT u.id AS "userId",u.name AS "userName",u.username,p.name AS "planName",
+        u.subscription_started_at AS "startedAt",u.subscription_expires_at AS "expiresAt",
+        u.subscription_quota_bytes AS "quotaBytes",u.subscription_used_bytes AS "usedBytes",u.blocked,
+        (u.subscription_expires_at>NOW() AND u.subscription_used_bytes<u.subscription_quota_bytes) AS active
+        FROM users u LEFT JOIN subscription_plans p ON p.name=u.plan
+        WHERE u.subscription_started_at IS NOT NULL ORDER BY u.subscription_started_at DESC`);
+      return reply(res, 200, subscriptions.rows);
+    }
+
+    if (pathname === '/api/users/block' && method === 'POST') {
+      const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
+      const id = Number(body.userId);
+      if (!Number.isSafeInteger(id) || id < 1 || typeof body.blocked !== 'boolean') {
+        return reply(res, 400, { message: 'شناسه کاربر یا وضعیت مسدودسازی معتبر نیست.' });
+      }
+      const updated = await database.query('UPDATE users SET blocked=$2 WHERE id=$1 RETURNING id', [id, body.blocked]);
+      if (!updated.rows[0]) return reply(res, 404, { message: 'کاربر پیدا نشد.' });
+      if (body.blocked) await database.query('UPDATE app_user_sessions SET vpn_connected=FALSE,vpn_heartbeat_at=NULL WHERE user_id=$1', [id]);
+      return reply(res, 200, { success: true, userId: id, blocked: body.blocked });
+    }
+
     if (pathname === '/api/subscriptions' && method === 'GET') {
       const plans = await database.query(`SELECT p.id,p.name,p.description,p.price_irr AS "priceIrr",p.quota_bytes AS "quotaBytes",
         p.duration_days AS "durationDays",p.simultaneous_devices AS "simultaneousDevices",p.features,p.active,COUNT(u.id)::int AS users
@@ -122,16 +144,24 @@ return async function handler(req: any, res: any) {
       if (typeof password !== 'string' || password.length < 8 || password.length > 128) {
         return reply(res, 400, { message: 'رمز عبور باید حداقل ۸ نویسه باشد.' });
       }
-      if (!['آزمایشی', 'پایه', 'حرفه‌ای'].includes(plan)) return reply(res, 400, { message: 'نوع اشتراک معتبر نیست.' });
+      const planRow = await database.query<any>('SELECT id,duration_days,quota_bytes FROM subscription_plans WHERE name=$1 AND active=true', [plan]);
+      if (!planRow.rows[0]) return reply(res, 400, { message: 'پلن اشتراک فعال پیدا نشد.' });
       try {
         const passwordHash = await bcrypt.hash(password, 10);
-        const created = await database.query(
+        const created = await database.query<any>(
           `INSERT INTO users (name, username, status, plan, last_seen, password_hash)
            VALUES ($1, $2, 'آفلاین', $3, 'هنوز متصل نشده', $4)
            RETURNING id, name, username, status, plan, last_seen AS "lastSeen"`,
           [name, username, plan, passwordHash],
         );
-        return reply(res, 201, created.rows[0]);
+        const user = created.rows[0];
+        const subscription = await database.query<any>(`UPDATE users SET subscription_started_at=NOW(),
+          subscription_expires_at=NOW()+$2*INTERVAL '1 day',subscription_quota_bytes=$3,subscription_used_bytes=0
+          WHERE id=$1 RETURNING subscription_started_at AS "startedAt",subscription_expires_at AS "expiresAt",subscription_quota_bytes AS "quotaBytes"`,
+        [user.id, planRow.rows[0].duration_days, planRow.rows[0].quota_bytes]);
+        await database.query(`INSERT INTO user_subscriptions(user_id,plan_id,started_at,expires_at,quota_bytes,used_bytes,status)
+          VALUES($1,$2,$3,$4,$5,0,'active')`, [user.id, planRow.rows[0].id, subscription.rows[0].startedAt, subscription.rows[0].expiresAt, subscription.rows[0].quotaBytes]);
+        return reply(res, 201, { ...user, ...subscription.rows[0], blocked: false });
       } catch (error: any) {
         if (error?.code === '23505') return reply(res, 409, { message: 'این ایمیل یا نام کاربری قبلاً ثبت شده است.' });
         throw error;
@@ -152,22 +182,27 @@ return async function handler(req: any, res: any) {
       if (username.length < 3 || username.length > 254 || (!validEmail && !validUsername)) {
         return reply(res, 400, { message: 'ایمیل یا نام کاربری معتبر وارد کنید.' });
       }
-      if (!['آزمایشی', 'پایه', 'حرفه‌ای'].includes(plan)) return reply(res, 400, { message: 'نوع اشتراک معتبر نیست.' });
+      const planRow = await database.query<any>('SELECT id,duration_days,quota_bytes FROM subscription_plans WHERE name=$1 AND active=true', [plan]);
+      if (!planRow.rows[0]) return reply(res, 400, { message: 'پلن اشتراک فعال پیدا نشد.' });
       if (password && (password.length < 8 || password.length > 128)) {
         return reply(res, 400, { message: 'رمز تازه باید حداقل ۸ نویسه باشد.' });
       }
       try {
         const passwordHash = password ? await bcrypt.hash(password, 10) : null;
-        const updated = await database.query(
+        const updated = await database.query<any>(
           `UPDATE users
-           SET name = $1, username = $2, plan = $3,
-               password_hash = COALESCE($4, password_hash)
-           WHERE id = $5 RETURNING id`,
-          [name, username, plan, passwordHash, id],
+           SET name = $1, username = $2, plan = $3, password_hash = COALESCE($4, password_hash),
+               subscription_started_at=NOW(),subscription_expires_at=NOW()+$6*INTERVAL '1 day',
+               subscription_quota_bytes=$7,subscription_used_bytes=0
+           WHERE id = $5 RETURNING id,subscription_started_at AS "startedAt",subscription_expires_at AS "expiresAt",subscription_quota_bytes AS "quotaBytes"`,
+          [name, username, plan, passwordHash, id, planRow.rows[0].duration_days, planRow.rows[0].quota_bytes],
         );
         if (!updated.rows[0]) return reply(res, 404, { message: 'کاربر پیدا نشد.' });
+        await database.query(`UPDATE user_subscriptions SET status='cancelled' WHERE user_id=$1 AND status='active'`, [id]);
+        await database.query(`INSERT INTO user_subscriptions(user_id,plan_id,started_at,expires_at,quota_bytes,used_bytes,status)
+          VALUES($1,$2,$3,$4,$5,0,'active')`, [id, planRow.rows[0].id, updated.rows[0].startedAt, updated.rows[0].expiresAt, updated.rows[0].quotaBytes]);
         const user = await selectUsers(database, id);
-        return reply(res, 200, user.rows[0]);
+        return reply(res, 200, { ...user.rows[0], ...updated.rows[0] });
       } catch (error: any) {
         if (error?.code === '23505') return reply(res, 409, { message: 'این ایمیل یا نام کاربری قبلاً ثبت شده است.' });
         throw error;

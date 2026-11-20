@@ -41,6 +41,7 @@ export async function initializeSchema(database: Pick<Pool, 'query'>) {
     ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_expires_at TIMESTAMPTZ;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_quota_bytes BIGINT;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_used_bytes BIGINT NOT NULL DEFAULT 0;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS blocked BOOLEAN NOT NULL DEFAULT FALSE;
     CREATE TABLE IF NOT EXISTS subscription_plans (
       id BIGSERIAL PRIMARY KEY, name TEXT NOT NULL UNIQUE, description TEXT NOT NULL DEFAULT '',
       price_irr BIGINT NOT NULL DEFAULT 0 CHECK (price_irr >= 0), quota_bytes BIGINT NOT NULL CHECK (quota_bytes > 0),
