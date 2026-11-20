@@ -37,6 +37,7 @@ export async function initializeSchema(database: Pick<Pool, 'query'>) {
     CREATE INDEX IF NOT EXISTS chat_messages_created_at_idx ON chat_messages(created_at);
     ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS user_id BIGINT REFERENCES users(id) ON DELETE SET NULL;
     ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS sender_role TEXT NOT NULL DEFAULT 'admin' CHECK (sender_role IN ('admin','user'));
+    ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS read_by_admin BOOLEAN NOT NULL DEFAULT FALSE;
     CREATE INDEX IF NOT EXISTS chat_messages_user_created_idx ON chat_messages(user_id,created_at);
     CREATE TABLE IF NOT EXISTS proxy_settings (
       id INTEGER PRIMARY KEY CHECK (id = 1), host TEXT NOT NULL, port INTEGER NOT NULL CHECK (port BETWEEN 1 AND 65535),

@@ -321,15 +321,23 @@ return async function handler(req: any, res: any) {
 
     if (pathname === '/api/chat/conversations' && method === 'GET') {
       const conversations = await database.query(`SELECT u.id AS "userId",u.name,u.username,
-        latest.message AS "lastMessage",latest.created_at AS "lastMessageAt"
+        latest.message AS "lastMessage",latest.created_at AS "lastMessageAt",
+        (SELECT COUNT(*)::int FROM chat_messages unread WHERE unread.user_id=u.id AND unread.sender_role='user' AND unread.read_by_admin=FALSE) AS "unreadCount"
         FROM users u LEFT JOIN LATERAL (SELECT message,created_at FROM chat_messages m WHERE m.user_id=u.id ORDER BY m.id DESC LIMIT 1) latest ON TRUE
+        WHERE latest.message IS NOT NULL
         ORDER BY latest.created_at DESC NULLS LAST,u.id DESC`);
       return reply(res, 200, conversations.rows);
+    }
+
+    if (pathname === '/api/chat/unread-count' && method === 'GET') {
+      const result = await database.query('SELECT COUNT(DISTINCT user_id)::int AS count FROM chat_messages WHERE sender_role=$1 AND read_by_admin=FALSE AND user_id IS NOT NULL', ['user']);
+      return reply(res, 200, result.rows[0] || { count: 0 });
     }
 
     if (pathname === '/api/chat' && method === 'GET') {
       const userId = Number(new URL(req.url || '/', 'http://localhost').searchParams.get('userId'));
       if (!Number.isSafeInteger(userId) || userId < 1) return reply(res, 400, { message: 'کاربر گفت‌وگو را انتخاب کنید.' });
+      await database.query("UPDATE chat_messages SET read_by_admin=TRUE WHERE user_id=$1 AND sender_role='user' AND read_by_admin=FALSE", [userId]);
       const messages = await database.query(`SELECT id,user_id AS "userId",author,message AS text,created_at AS time,sender_role AS "senderRole"
         FROM chat_messages WHERE user_id=$1 ORDER BY id DESC LIMIT 200`, [userId]);
       return reply(res, 200, messages.rows.reverse());

@@ -180,13 +180,18 @@ app.post('/api/users/:id/subscriptions',async(req,res,next)=>{const db=await poo
 }catch(error){await db.query('ROLLBACK').catch(()=>undefined);next(error);}finally{db.release();}});
 
 app.get('/api/chat/conversations',async(_req,res,next)=>{try{
-  const result=await pool.query(`SELECT u.id AS "userId",u.name,u.username,latest.message AS "lastMessage",latest.created_at AS "lastMessageAt"
+  const result=await pool.query(`SELECT u.id AS "userId",u.name,u.username,latest.message AS "lastMessage",latest.created_at AS "lastMessageAt",
+    (SELECT COUNT(*)::int FROM chat_messages unread WHERE unread.user_id=u.id AND unread.sender_role='user' AND unread.read_by_admin=FALSE) AS "unreadCount"
     FROM users u LEFT JOIN LATERAL(SELECT message,created_at FROM chat_messages m WHERE m.user_id=u.id ORDER BY m.id DESC LIMIT 1) latest ON TRUE
+    WHERE latest.message IS NOT NULL
     ORDER BY latest.created_at DESC NULLS LAST,u.id DESC`);res.json(result.rows);
 }catch(error){next(error);}});
 
+app.get('/api/chat/unread-count',async(_req,res,next)=>{try{const result=await pool.query("SELECT COUNT(DISTINCT user_id)::int AS count FROM chat_messages WHERE sender_role='user' AND read_by_admin=FALSE AND user_id IS NOT NULL");res.json(result.rows[0]||{count:0});}catch(error){next(error);}});
+
 app.get('/api/chat',async(req,res,next)=>{try{
   const userId=Number(req.query.userId);if(!Number.isSafeInteger(userId)||userId<1)return res.status(400).json({message:'کاربر گفت‌وگو را انتخاب کنید.'});
+  await pool.query("UPDATE chat_messages SET read_by_admin=TRUE WHERE user_id=$1 AND sender_role='user' AND read_by_admin=FALSE",[userId]);
   const result=await pool.query(`SELECT id,user_id AS "userId",author,message AS text,created_at AS time,sender_role AS "senderRole"
     FROM chat_messages WHERE user_id=$1 ORDER BY id DESC LIMIT 200`,[userId]);res.json(result.rows.reverse());
 }catch(error){next(error);}});
