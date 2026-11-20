@@ -8,6 +8,7 @@
     "dev:server": "tsx watch server/index.ts",
     "dev:client": "vite --host 0.0.0.0",
     "build": "tsc -b && vite build",
+    "test": "tsx --test tests/presence.test.ts",
     "start": "tsx server/index.ts"
   },
   "dependencies": {
@@ -19,6 +20,7 @@
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.17",
     "@types/bcryptjs": "^2.4.6",
     "@types/express": "^5.0.0",
     "@types/node": "^22.10.2",
@@ -32,4 +34,3 @@
     "vite": "^6.0.5"
   }
 }
-
