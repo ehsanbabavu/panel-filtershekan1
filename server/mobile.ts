@@ -92,12 +92,13 @@ export async function handleMobileRequest(action: string, req: any, res: any, da
   }
   if (action === 'proxy' && method === 'GET') {
     if (!token) return reply(res, 401, { message: 'برای دریافت پروکسی وارد حساب شوید.' });
-    const access = await database.query<any>(`SELECT u.blocked,u.subscription_expires_at,u.subscription_quota_bytes,u.subscription_used_bytes
+    const access = await database.query<any>(`SELECT u.blocked,u.subscription_expires_at,(u.subscription_expires_at>NOW()) AS subscription_time_active,
+      u.subscription_quota_bytes,u.subscription_used_bytes
       FROM app_user_sessions s JOIN users u ON u.id=s.user_id
       WHERE s.token=$1 AND (s.expires_at IS NULL OR s.expires_at>NOW())`, [token]);
     if (!access.rows[0]) return reply(res, 401, { message: 'نشست شما منقضی شده است.' });
     const user = access.rows[0];
-    if (user.blocked || !user.subscription_expires_at || new Date(user.subscription_expires_at).getTime() <= Date.now() || BigInt(user.subscription_used_bytes || 0) >= BigInt(user.subscription_quota_bytes || 0)) {
+    if (user.blocked || !user.subscription_time_active || BigInt(user.subscription_used_bytes || 0) >= BigInt(user.subscription_quota_bytes || 0)) {
       return reply(res, 403, { message: 'برای دریافت پروکسی به اشتراک فعال نیاز دارید.' });
     }
     const config = await database.query<any>('SELECT id AS "proxyId",name,host,port,username,password,updated_at AS "updatedAt" FROM proxy_servers WHERE active=true ORDER BY RANDOM() LIMIT 1');
@@ -107,15 +108,18 @@ export async function handleMobileRequest(action: string, req: any, res: any, da
   if (action === 'usage' && method === 'GET') {
     if (!token) return reply(res, 401, { message: 'برای ادامه وارد شوید.' });
     const result = await database.query<any>(`SELECT u.id AS user_id,u.name,u.username,u.plan,u.blocked,u.subscription_started_at,
-      u.subscription_expires_at,u.subscription_quota_bytes,u.subscription_used_bytes
+      u.subscription_expires_at,(u.subscription_expires_at>NOW()) AS subscription_time_active,
+      u.subscription_quota_bytes,u.subscription_used_bytes
       FROM app_user_sessions s JOIN users u ON u.id=s.user_id
       WHERE s.token=$1 AND (s.expires_at IS NULL OR s.expires_at>NOW())`, [token]);
     if (!result.rows[0]) return reply(res, 401, { message: 'نشست شما منقضی شده است.' });
     const row=result.rows[0], quota=BigInt(row.subscription_quota_bytes||0), used=BigInt(row.subscription_used_bytes||0);
-    const canConnect=Boolean(!row.blocked&&row.subscription_expires_at&&new Date(row.subscription_expires_at).getTime()>Date.now()&&used<quota);
+    const timeActive=Boolean(row.subscription_time_active);
+    const canConnect=Boolean(!row.blocked&&timeActive&&used<quota);
     return reply(res,200,{id:row.user_id,name:row.name,username:row.username,plan:row.plan,
       subscriptionStartedAt:row.subscription_started_at,subscriptionExpiresAt:row.subscription_expires_at,
-      subscriptionQuotaBytes:quota.toString(),subscriptionUsedBytes:used.toString(),blocked:Boolean(row.blocked),canConnect,exhausted:!canConnect&&!row.blocked});
+      subscriptionQuotaBytes:quota.toString(),subscriptionUsedBytes:used.toString(),blocked:Boolean(row.blocked),
+      subscriptionTimeActive:timeActive,canConnect,exhausted:used>=quota,serverNow:new Date().toISOString()});
   }
   if (action === 'presence' && method === 'POST') {
     if (!token) return reply(res, 401, { message: 'برای ادامه وارد شوید.' });

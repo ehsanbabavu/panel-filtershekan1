@@ -30,7 +30,8 @@ export async function reportPresence(database: MobileDatabase, token: string, co
     await client.query('BEGIN');
     const session = await client.query<any>(
       `SELECT s.user_id, s.vpn_sequence, u.name, u.username, u.plan, u.blocked, u.subscription_started_at,
-        u.subscription_expires_at, u.subscription_quota_bytes, u.subscription_used_bytes
+        u.subscription_expires_at,(u.subscription_expires_at>NOW()) AS subscription_time_active,
+        u.subscription_quota_bytes, u.subscription_used_bytes
        FROM app_user_sessions s JOIN users u ON u.id=s.user_id
        WHERE s.token = $1 AND (s.expires_at IS NULL OR s.expires_at > NOW()) FOR UPDATE OF s,u`,
       [token],
@@ -70,7 +71,7 @@ export async function reportPresence(database: MobileDatabase, token: string, co
       await client.query('COMMIT');
       return { authorized: true, applied: false, subscription: subscriptionOf(row) };
     }
-    const active = Boolean(row.subscription_expires_at && new Date(row.subscription_expires_at).getTime() > Date.now());
+    const active = Boolean(row.subscription_time_active);
     if (connected && (row.blocked || !active || used >= quota)) {
       await client.query(`UPDATE app_user_sessions SET vpn_connected=FALSE,vpn_heartbeat_at=NULL,vpn_sequence=$2 WHERE token=$1`, [token,sequence]);
       await client.query('COMMIT');
@@ -99,8 +100,10 @@ export async function reportPresence(database: MobileDatabase, token: string, co
 
 function subscriptionOf(row: any) {
   const quota = BigInt(row.subscription_quota_bytes || 0), used = BigInt(row.subscription_used_bytes || 0);
-  const canConnect = Boolean(!row.blocked && row.subscription_expires_at && new Date(row.subscription_expires_at).getTime() > Date.now() && used < quota);
+  const timeActive = Boolean(row.subscription_time_active);
+  const canConnect = Boolean(!row.blocked && timeActive && used < quota);
   return { id: row.user_id, name: row.name, username: row.username, plan: row.plan,
     subscriptionStartedAt: row.subscription_started_at, subscriptionExpiresAt: row.subscription_expires_at,
-    subscriptionQuotaBytes: quota.toString(), subscriptionUsedBytes: used.toString(), blocked: Boolean(row.blocked), canConnect, exhausted: !canConnect && !row.blocked };
+    subscriptionQuotaBytes: quota.toString(), subscriptionUsedBytes: used.toString(), blocked: Boolean(row.blocked),
+    subscriptionTimeActive: timeActive, canConnect, exhausted: used >= quota };
 }
