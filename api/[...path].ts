@@ -78,16 +78,17 @@ return async function handler(req: any, res: any) {
         await client.query('BEGIN');
         const plan = (await client.query<any>('SELECT * FROM subscription_plans WHERE id=$1 AND active=true', [planId])).rows[0];
         if (!plan) { await client.query('ROLLBACK'); return reply(res, 404, { message: 'پلن فعال پیدا نشد.' }); }
-        const user = (await client.query<any>('SELECT id FROM users WHERE id=$1 FOR UPDATE', [userId])).rows[0];
+        const user = (await client.query<any>('SELECT id,subscription_used_bytes FROM users WHERE id=$1 FOR UPDATE', [userId])).rows[0];
         if (!user) { await client.query('ROLLBACK'); return reply(res, 404, { message: 'کاربر پیدا نشد.' }); }
+        const usedBytes = String(user.subscription_used_bytes || 0);
         const startedAt = new Date();
         const expiresAt = new Date(startedAt.getTime() + durationDays * 86400000);
-        await client.query("UPDATE user_subscriptions SET status='cancelled' WHERE user_id=$1 AND status='active'", [userId]);
+        await client.query("UPDATE user_subscriptions SET status='cancelled',used_bytes=$2 WHERE user_id=$1 AND status='active'", [userId, usedBytes]);
         const subscription = (await client.query<any>(`INSERT INTO user_subscriptions(user_id,plan_id,started_at,expires_at,quota_bytes,used_bytes,status)
-          VALUES($1,$2,$3,$4,$5,0,'active') RETURNING id,user_id AS "userId",plan_id AS "planId",started_at AS "startedAt",expires_at AS "expiresAt",quota_bytes AS "quotaBytes",used_bytes AS "usedBytes",status`,
-        [userId, planId, startedAt, expiresAt, quotaBytes])).rows[0];
+          VALUES($1,$2,$3,$4,$5,$6,'active') RETURNING id,user_id AS "userId",plan_id AS "planId",started_at AS "startedAt",expires_at AS "expiresAt",quota_bytes AS "quotaBytes",used_bytes AS "usedBytes",status`,
+        [userId, planId, startedAt, expiresAt, quotaBytes, usedBytes])).rows[0];
         await client.query(`UPDATE users SET plan=$2,subscription_started_at=$3,subscription_expires_at=$4,
-          subscription_quota_bytes=$5,subscription_used_bytes=0 WHERE id=$1`, [userId, plan.name, startedAt, expiresAt, quotaBytes]);
+          subscription_quota_bytes=$5,subscription_used_bytes=$6 WHERE id=$1`, [userId, plan.name, startedAt, expiresAt, quotaBytes, usedBytes]);
         await client.query('COMMIT');
         return reply(res, 200, { ...subscription, planName: plan.name, durationDays });
       } catch (error) {
