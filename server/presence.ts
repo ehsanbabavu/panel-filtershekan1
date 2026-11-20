@@ -40,32 +40,41 @@ export async function reportPresence(database: MobileDatabase, token: string, co
       await client.query('ROLLBACK');
       return { authorized: false, applied: false };
     }
-    // A delayed heartbeat must never undo a newer disconnect.
-    if (sequence <= Number(row.vpn_sequence)) {
+    // A late heartbeat must not change connection state, but a newer cumulative
+    // byte counter can still contain valid usage and should be accounted for.
+    const stale = sequence <= Number(row.vpn_sequence);
+    let used = BigInt(row.subscription_used_bytes || 0);
+    const quota = BigInt(row.subscription_quota_bytes || 0);
+    if (connected && cumulativeBytes !== undefined) {
+      const prior = await client.query<any>('SELECT cumulative_bytes FROM mobile_usage_reports WHERE user_id=$1 AND token=$2 FOR UPDATE', [row.user_id, token]);
+      const incoming = BigInt(cumulativeBytes);
+      let delta = incoming;
+      if (prior.rows[0]) {
+        const previous = BigInt(prior.rows[0].cumulative_bytes);
+        delta = incoming >= previous ? incoming - previous : stale ? 0n : incoming;
+      }
+      if (!stale || !prior.rows[0] || incoming > BigInt(prior.rows[0].cumulative_bytes)) {
+        await client.query(`INSERT INTO mobile_usage_reports(user_id,token,sequence,cumulative_bytes) VALUES($1,$2,$3,$4)
+          ON CONFLICT(user_id,token) DO UPDATE SET sequence=GREATEST(mobile_usage_reports.sequence,EXCLUDED.sequence),
+          cumulative_bytes=CASE WHEN $5 THEN GREATEST(mobile_usage_reports.cumulative_bytes,EXCLUDED.cumulative_bytes)
+            ELSE EXCLUDED.cumulative_bytes END,updated_at=NOW()`,
+        [row.user_id,token,sequence,cumulativeBytes,stale]);
+      }
+      used = used + delta > quota ? quota : used + delta;
+      if (delta > 0n) {
+        await client.query('UPDATE users SET subscription_used_bytes=$1 WHERE id=$2', [used.toString(),row.user_id]);
+        row.subscription_used_bytes = used.toString();
+      }
+    }
+    if (stale) {
       await client.query('COMMIT');
       return { authorized: true, applied: false, subscription: subscriptionOf(row) };
     }
-    let used = BigInt(row.subscription_used_bytes || 0);
-    const quota = BigInt(row.subscription_quota_bytes || 0);
     const active = Boolean(row.subscription_expires_at && new Date(row.subscription_expires_at).getTime() > Date.now());
     if (connected && (row.blocked || !active || used >= quota)) {
       await client.query(`UPDATE app_user_sessions SET vpn_connected=FALSE,vpn_heartbeat_at=NULL,vpn_sequence=$2 WHERE token=$1`, [token,sequence]);
       await client.query('COMMIT');
       return { authorized: true, applied: false, denied: true, subscription: { ...subscriptionOf(row), canConnect: false } };
-    }
-    if (connected && cumulativeBytes !== undefined) {
-      const prior = await client.query<any>('SELECT cumulative_bytes FROM mobile_usage_reports WHERE user_id=$1 AND token=$2 FOR UPDATE', [row.user_id, token]);
-      let delta = BigInt(cumulativeBytes);
-      if (prior.rows[0]) {
-        const previous = BigInt(prior.rows[0].cumulative_bytes);
-        delta = BigInt(cumulativeBytes) >= previous ? BigInt(cumulativeBytes) - previous : BigInt(cumulativeBytes);
-      }
-      await client.query(`INSERT INTO mobile_usage_reports(user_id,token,sequence,cumulative_bytes) VALUES($1,$2,$3,$4)
-        ON CONFLICT(user_id,token) DO UPDATE SET sequence=EXCLUDED.sequence,cumulative_bytes=EXCLUDED.cumulative_bytes,updated_at=NOW()`,
-      [row.user_id,token,sequence,cumulativeBytes]);
-      used = used + delta > quota ? quota : used + delta;
-      await client.query('UPDATE users SET subscription_used_bytes=$1 WHERE id=$2', [used.toString(),row.user_id]);
-      row.subscription_used_bytes = used.toString();
     }
     const canConnect = !row.blocked && active && used < quota;
     await client.query(

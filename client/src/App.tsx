@@ -80,8 +80,11 @@ function App() {
   useEffect(() => {
     if (!token || section !== 'subscriptions') return;
     const controller = new AbortController();
-    api<UserSubscription[]>('/api/user-subscriptions', token, controller.signal).then(setUserSubscriptions).catch(() => {});
-    return () => controller.abort();
+    let stopped = false;
+    const refresh = () => api<UserSubscription[]>('/api/user-subscriptions', token, controller.signal).then(rows => { if (!stopped) setUserSubscriptions(rows); }).catch(() => {});
+    void refresh();
+    const timer = window.setInterval(refresh, 10000);
+    return () => { stopped = true; window.clearInterval(timer); controller.abort(); };
   }, [token, section]);
   const filteredUsers = useMemo(() => users.filter(u => `${u.name} ${u.username} ${u.plan}`.includes(search)), [users, search]);
   const login = (newToken: string, username: string) => { sessionStorage.setItem('fs-token', newToken); sessionStorage.setItem('fs-user', username); setAdmin(username); setToken(newToken); };
