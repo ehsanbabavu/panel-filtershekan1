@@ -11,7 +11,7 @@ function bodyOf(req: any) {
 
 export async function handleMobileRequest(action: string, req: any, res: any, database: MobileDatabase) {
   const method = String(req.method || 'GET').toUpperCase();
-  if (!['register', 'login', 'me', 'logout', 'presence', 'usage', 'proxy'].includes(action)) {
+  if (!['register', 'login', 'me', 'logout', 'presence', 'usage', 'proxy', 'chat'].includes(action)) {
     return reply(res, 404, { message: 'مسیر پیدا نشد.' });
   }
 
@@ -71,6 +71,23 @@ export async function handleMobileRequest(action: string, req: any, res: any, da
   }
 
   const token = String(req.headers?.authorization || '').replace(/^Bearer\s+/i, '');
+  if (action === 'chat' && (method === 'GET' || method === 'POST')) {
+    if (!token) return reply(res, 401, { message: 'برای گفت‌وگو وارد حساب شوید.' });
+    const session = await database.query<any>(`SELECT u.id AS "userId",u.name FROM app_user_sessions s JOIN users u ON u.id=s.user_id
+      WHERE s.token=$1 AND (s.expires_at IS NULL OR s.expires_at>NOW())`, [token]);
+    if (!session.rows[0]) return reply(res, 401, { message: 'نشست شما منقضی شده است.' });
+    if (method === 'GET') {
+      const messages = await database.query<any>(`SELECT id,author,message AS text,created_at AS time,sender_role AS "senderRole"
+        FROM chat_messages WHERE user_id=$1 ORDER BY created_at DESC,id DESC LIMIT 200`, [session.rows[0].userId]);
+      return reply(res, 200, messages.rows.reverse());
+    }
+    const message = String(bodyOf(req).message || '').trim();
+    if (!message || message.length > 4000) return reply(res, 400, { message: 'پیام باید بین ۱ تا ۴۰۰۰ نویسه باشد.' });
+    const inserted = await database.query<any>(`INSERT INTO chat_messages(user_id,sender_role,author,message)
+      VALUES($1,'user',$2,$3) RETURNING id,author,message AS text,created_at AS time,sender_role AS "senderRole"`,
+    [session.rows[0].userId, session.rows[0].name, message]);
+    return reply(res, 201, inserted.rows[0]);
+  }
   if (action === 'proxy' && method === 'GET') {
     if (!token) return reply(res, 401, { message: 'برای دریافت پروکسی وارد حساب شوید.' });
     const access = await database.query<any>(`SELECT u.blocked,u.subscription_expires_at,u.subscription_quota_bytes,u.subscription_used_bytes
@@ -81,9 +98,9 @@ export async function handleMobileRequest(action: string, req: any, res: any, da
     if (user.blocked || !user.subscription_expires_at || new Date(user.subscription_expires_at).getTime() <= Date.now() || BigInt(user.subscription_used_bytes || 0) >= BigInt(user.subscription_quota_bytes || 0)) {
       return reply(res, 403, { message: 'برای دریافت پروکسی به اشتراک فعال نیاز دارید.' });
     }
-    const config = await database.query<any>('SELECT host,port,username,password,updated_at AS "updatedAt" FROM proxy_settings WHERE id=1');
-    if (!config.rows[0]) return reply(res, 404, { message: 'پروکسی در پنل تنظیم نشده است.' });
-    return reply(res, 200, { ...config.rows[0], type: 'socks5', name: 'پروکسی سرور' });
+    const config = await database.query<any>('SELECT id AS "proxyId",name,host,port,username,password,updated_at AS "updatedAt" FROM proxy_servers WHERE active=true ORDER BY RANDOM() LIMIT 1');
+    if (!config.rows[0]) return reply(res, 404, { message: 'هیچ پروکسی فعالی در پنل وجود ندارد.' });
+    return reply(res, 200, { ...config.rows[0], type: 'socks5' });
   }
   if (action === 'usage' && method === 'GET') {
     if (!token) return reply(res, 401, { message: 'برای ادامه وارد شوید.' });

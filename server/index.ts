@@ -65,17 +65,25 @@ app.get('/api/users', async (_req, res, next) => {
   } catch (error) { next(error); }
 });
 
-app.get('/api/proxy',async(_req,res,next)=>{try{
-  const result=await pool.query('SELECT host,port,username,password,updated_at AS "updatedAt" FROM proxy_settings WHERE id=1');res.json(result.rows[0]||null);
+app.get('/api/proxies',async(_req,res,next)=>{try{
+  const result=await pool.query(`SELECT id,name,host,port,username,password,active,updated_at AS "updatedAt" FROM proxy_servers ORDER BY id DESC`);res.json(result.rows);
 }catch(error){next(error);}});
 
-app.put('/api/proxy',async(req,res,next)=>{try{
-  const host=typeof req.body?.host==='string'?req.body.host.trim():'',port=Number(req.body?.port),username=typeof req.body?.username==='string'?req.body.username:'',password=typeof req.body?.password==='string'?req.body.password:'';
-  if(!host||host.length>253||/\s/.test(host)||!Number.isInteger(port)||port<1||port>65535||username.length>255||password.length>512)return res.status(400).json({message:'آدرس، پورت یا مشخصات ورود پروکسی معتبر نیست.'});
-  const result=await pool.query(`INSERT INTO proxy_settings(id,host,port,username,password) VALUES(1,$1,$2,$3,$4)
-    ON CONFLICT(id) DO UPDATE SET host=EXCLUDED.host,port=EXCLUDED.port,username=EXCLUDED.username,password=EXCLUDED.password,updated_at=NOW()
-    RETURNING host,port,username,password,updated_at AS "updatedAt"`,[host,port,username,password]);res.json(result.rows[0]);
+app.post('/api/proxies',async(req,res,next)=>{try{
+  const {name,host,port,username='',password='',active=true}=req.body??{},n=String(name||'').trim(),h=String(host||'').trim(),p=Number(port),u=String(username),pw=String(password);
+  if(n.length<2||n.length>80||!h||h.length>253||/\s/.test(h)||!Number.isInteger(p)||p<1||p>65535||u.length>255||pw.length>512||typeof active!=='boolean')return res.status(400).json({message:'مشخصات ساکس معتبر نیست.'});
+  const result=await pool.query(`INSERT INTO proxy_servers(name,host,port,username,password,active) VALUES($1,$2,$3,$4,$5,$6)
+    RETURNING id,name,host,port,username,password,active,updated_at AS "updatedAt"`,[n,h,p,u,pw,active]);res.status(201).json(result.rows[0]);
 }catch(error){next(error);}});
+
+app.patch('/api/proxies',async(req,res,next)=>{try{
+  const id=Number(req.query.id),{name,host,port,username='',password='',active}=req.body??{},n=String(name||'').trim(),h=String(host||'').trim(),p=Number(port),u=String(username),pw=String(password);
+  if(!Number.isSafeInteger(id)||id<1||n.length<2||n.length>80||!h||h.length>253||/\s/.test(h)||!Number.isInteger(p)||p<1||p>65535||u.length>255||pw.length>512||typeof active!=='boolean')return res.status(400).json({message:'مشخصات ساکس معتبر نیست.'});
+  const result=await pool.query(`UPDATE proxy_servers SET name=$2,host=$3,port=$4,username=$5,password=$6,active=$7,updated_at=NOW() WHERE id=$1
+    RETURNING id,name,host,port,username,password,active,updated_at AS "updatedAt"`,[id,n,h,p,u,pw,active]);if(!result.rows[0])return res.status(404).json({message:'ساکس پیدا نشد.'});res.json(result.rows[0]);
+}catch(error){next(error);}});
+
+app.delete('/api/proxies',async(req,res,next)=>{try{const id=Number(req.query.id);if(!Number.isSafeInteger(id)||id<1)return res.status(400).json({message:'شناسه ساکس معتبر نیست.'});const result=await pool.query('DELETE FROM proxy_servers WHERE id=$1 RETURNING id',[id]);if(!result.rows[0])return res.status(404).json({message:'ساکس پیدا نشد.'});res.json({success:true,id:result.rows[0].id});}catch(error){next(error);}});
 
 app.get('/api/subscriptions', async (_req, res, next) => {
   try { const result=await pool.query(`SELECT p.id,p.name,p.description,p.price_irr AS "priceIrr",p.quota_bytes AS "quotaBytes",
@@ -171,28 +179,26 @@ app.post('/api/users/:id/subscriptions',async(req,res,next)=>{const db=await poo
   await db.query('COMMIT');res.status(201).json({...sub,quota_bytes:String(bytes)});
 }catch(error){await db.query('ROLLBACK').catch(()=>undefined);next(error);}finally{db.release();}});
 
-app.get('/api/chat', async (_req, res, next) => {
-  try {
-    const result = await pool.query(
-      `SELECT id, author, message AS text, created_at AS time
-       FROM chat_messages ORDER BY created_at DESC LIMIT 100`,
-    );
-    res.json(result.rows.reverse());
-  } catch (error) { next(error); }
-});
+app.get('/api/chat/conversations',async(_req,res,next)=>{try{
+  const result=await pool.query(`SELECT u.id AS "userId",u.name,u.username,latest.message AS "lastMessage",latest.created_at AS "lastMessageAt"
+    FROM users u LEFT JOIN LATERAL(SELECT message,created_at FROM chat_messages m WHERE m.user_id=u.id ORDER BY m.id DESC LIMIT 1) latest ON TRUE
+    ORDER BY latest.created_at DESC NULLS LAST,u.id DESC`);res.json(result.rows);
+}catch(error){next(error);}});
 
-app.post('/api/chat', async (req, res, next) => {
-  try {
-    const message = String(req.body?.message || '').trim();
-    if (!message) return res.status(400).json({ message: 'پیام خالی است.' });
-    const result = await pool.query(
-      `INSERT INTO chat_messages (author, message) VALUES ('شما', $1)
-       RETURNING id, author, message AS text, created_at AS time`,
-      [message],
-    );
-    res.json(result.rows[0]);
-  } catch (error) { next(error); }
-});
+app.get('/api/chat',async(req,res,next)=>{try{
+  const userId=Number(req.query.userId);if(!Number.isSafeInteger(userId)||userId<1)return res.status(400).json({message:'کاربر گفت‌وگو را انتخاب کنید.'});
+  const result=await pool.query(`SELECT id,user_id AS "userId",author,message AS text,created_at AS time,sender_role AS "senderRole"
+    FROM chat_messages WHERE user_id=$1 ORDER BY id DESC LIMIT 200`,[userId]);res.json(result.rows.reverse());
+}catch(error){next(error);}});
+
+app.post('/api/chat',async(req,res,next)=>{try{
+  const userId=Number(req.body?.userId),message=String(req.body?.message||'').trim();if(!Number.isSafeInteger(userId)||userId<1)return res.status(400).json({message:'کاربر گفت‌وگو را انتخاب کنید.'});if(!message||message.length>4000)return res.status(400).json({message:'پیام باید بین ۱ تا ۴۰۰۰ نویسه باشد.'});
+  const token=String(req.headers.authorization||'').replace(/^Bearer\s+/i,'');const admin=await pool.query<any>('SELECT admin_username FROM sessions WHERE token=$1 AND expires_at>NOW()',[token]);
+  if(!admin.rows[0])return res.status(401).json({message:'نشست شما منقضی شده است.'});
+  const result=await pool.query(`INSERT INTO chat_messages(user_id,sender_role,author,message) SELECT $1,'admin',$2,$3 WHERE EXISTS(SELECT 1 FROM users WHERE id=$1)
+    RETURNING id,user_id AS "userId",author,message AS text,created_at AS time,sender_role AS "senderRole"`,[userId,admin.rows[0].admin_username,message]);
+  if(!result.rows[0])return res.status(404).json({message:'کاربر پیدا نشد.'});res.status(201).json(result.rows[0]);
+}catch(error){next(error);}});
 
 app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   console.error('API request failed:', error);

@@ -5,13 +5,9 @@ type User = { id: string; name: string; username: string; status: string; plan: 
 type UserSubscription = { userId: string; userName: string; username: string; planId: number; planName: string; durationDays: number; startedAt: string; expiresAt: string; quotaBytes: string; usedBytes: string; blocked: boolean; active: boolean };
 type UserForm = { id?: string; name: string; username: string; plan: string; password: string };
 const newUserForm: UserForm = { name: '', username: '', plan: 'آزمایشی', password: '' };
-type Message = { author: string; text: string; time: string };
-const initialMessages: Message[] = [
-  { author: 'شما', text: 'سلام، وقت بخیر! وضعیت اتصال کاربران چطور است؟', time: '۱۰:۲۴' },
-  { author: 'پشتیبانی', text: 'سلام، وقت شما هم بخیر. همه سرورها در وضعیت پایدار هستند و اتصال کاربران بدون مشکل برقرار است.', time: '۱۰:۲۶' },
-  { author: 'شما', text: 'عالیه، ممنون از پیگیریتون 🙌', time: '۱۰:۲۸' },
-  { author: 'پشتیبانی', text: 'خواهش می‌کنم. اگر موردی بود همین‌جا پیام بدید، در خدمتیم.', time: '۱۰:۲۹' },
-];
+type Message = { id: string; userId: string; author: string; text: string; time: string; senderRole: 'admin' | 'user' };
+type Conversation = { userId: string; name: string; username: string; lastMessage?: string; lastMessageAt?: string };
+type ProxyEntry = { id: number; name: string; host: string; port: number; username: string; password: string; active: boolean; updatedAt?: string };
 
 class ApiError extends Error {
   constructor(public status: number) { super('دریافت اطلاعات با خطا مواجه شد.'); }
@@ -44,7 +40,7 @@ function Login({ onLogin }: { onLogin: (token: string, username: string) => void
 
 function App() {
   const [token, setToken] = useState(() => sessionStorage.getItem('fs-token') || ''); const [admin, setAdmin] = useState(() => sessionStorage.getItem('fs-user') || 'ehsan');
-  const [section, setSection] = useState('dashboard'); const [users, setUsers] = useState<User[]>([]); const [plans, setPlans] = useState<any[]>([]); const [userSubscriptions, setUserSubscriptions] = useState<UserSubscription[]>([]); const [subscriptionBusy, setSubscriptionBusy] = useState<string[]>([]); const [search, setSearch] = useState(''); const [mobileMenu, setMobileMenu] = useState(false); const [messages, setMessages] = useState(initialMessages); const [draft, setDraft] = useState(''); const [toast, setToast] = useState(''); const [loading, setLoading] = useState(false);
+  const [section, setSection] = useState('dashboard'); const [users, setUsers] = useState<User[]>([]); const [plans, setPlans] = useState<any[]>([]); const [userSubscriptions, setUserSubscriptions] = useState<UserSubscription[]>([]); const [subscriptionBusy, setSubscriptionBusy] = useState<string[]>([]); const [conversations, setConversations] = useState<Conversation[]>([]); const [selectedChatUserId, setSelectedChatUserId] = useState(''); const [search, setSearch] = useState(''); const [mobileMenu, setMobileMenu] = useState(false); const [messages, setMessages] = useState<Message[]>([]); const [draft, setDraft] = useState(''); const [toast, setToast] = useState(''); const [loading, setLoading] = useState(false);
   const [userModal, setUserModal] = useState(false); const [userForm, setUserForm] = useState<UserForm>(newUserForm); const [userBusy, setUserBusy] = useState(false); const [userError, setUserError] = useState('');
   useEffect(() => {
     if (!token) return;
@@ -72,9 +68,6 @@ function App() {
     };
     void refreshUsers();
     api<any[]>('/api/subscriptions', token, controller.signal).then(rows => { if (!stopped) setPlans(rows); }).catch(() => {});
-    api<Message[]>('/api/chat', token, controller.signal).then(rows => {
-      if (!stopped && rows.length) setMessages(rows.map(row => ({ ...row, time: new Date(row.time).toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' }) })));
-    }).catch(() => {});
     return () => { stopped = true; clearTimeout(timer); controller.abort(); };
   }, [token]);
   useEffect(() => {
@@ -86,6 +79,26 @@ function App() {
     const timer = window.setInterval(refresh, 10000);
     return () => { stopped = true; window.clearInterval(timer); controller.abort(); };
   }, [token, section]);
+  useEffect(() => {
+    if (!token || section !== 'chat') return;
+    const controller = new AbortController(); let stopped = false;
+    const refresh = () => api<Conversation[]>('/api/chat/conversations', token, controller.signal).then(rows => {
+      if (stopped) return; setConversations(rows);
+      if (!selectedChatUserId && rows.length) setSelectedChatUserId(String(rows[0].userId));
+      if (selectedChatUserId && !rows.some(row => String(row.userId) === selectedChatUserId)) setSelectedChatUserId(rows.length ? String(rows[0].userId) : '');
+    }).catch(() => {});
+    void refresh(); const timer = window.setInterval(refresh, 5000);
+    return () => { stopped = true; window.clearInterval(timer); controller.abort(); };
+  }, [token, section, selectedChatUserId]);
+  useEffect(() => {
+    if (!token || section !== 'chat' || !selectedChatUserId) { setMessages([]); return; }
+    const controller = new AbortController(); let stopped = false;
+    const refresh = () => api<Message[]>(`/api/chat?userId=${encodeURIComponent(selectedChatUserId)}`, token, controller.signal).then(rows => {
+      if (!stopped) setMessages(rows.map(row => ({ ...row, time: new Date(row.time).toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' }) })));
+    }).catch(() => {});
+    void refresh(); const timer = window.setInterval(refresh, 3000);
+    return () => { stopped = true; window.clearInterval(timer); controller.abort(); };
+  }, [token, section, selectedChatUserId]);
   const filteredUsers = useMemo(() => users.filter(u => `${u.name} ${u.username} ${u.plan}`.includes(search)), [users, search]);
   const login = (newToken: string, username: string) => { sessionStorage.setItem('fs-token', newToken); sessionStorage.setItem('fs-user', username); setAdmin(username); setToken(newToken); };
   const logout = () => { sessionStorage.clear(); setToken(''); setSection('dashboard'); };
@@ -129,7 +142,7 @@ function App() {
     } catch (error) { notify(error instanceof Error ? error.message : 'تغییر دسترسی انجام نشد.'); }
     finally { setSubscriptionBusy(current => current.filter(id => id !== subscription.userId)); }
   };
-  const sendMessage = async (event: React.FormEvent) => { event.preventDefault(); if (!draft.trim()) return; try { const message = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ message: draft }) }).then(r => r.json()); setMessages(current => [...current, { author: message.author, text: message.text, time: new Date(message.time).toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' }) }]); setDraft(''); } catch { notify('ارسال پیام انجام نشد.'); } };
+  const sendMessage = async (event: React.FormEvent) => { event.preventDefault(); if (!draft.trim() || !selectedChatUserId) return; try { const response = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ userId: Number(selectedChatUserId), message: draft }) }); const message = await response.json(); if (!response.ok) throw new Error(message.message || 'ارسال پیام انجام نشد.'); setMessages(current => [...current, { ...message, id: String(message.id), userId: String(message.userId), senderRole: 'admin', time: new Date(message.time).toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' }) }]); setDraft(''); } catch (error) { notify(error instanceof Error ? error.message : 'ارسال پیام انجام نشد.'); } };
   if (!token) return <Login onLogin={login}/>;
   const nav = [{ id: 'dashboard', label: 'داشبورد', icon: LayoutDashboard }, { id: 'users', label: 'کاربران', icon: Users, count: users.length }, { id: 'plans', label: 'پلن‌ها', icon: CreditCard }, { id: 'subscriptions', label: 'اشتراک‌ها', icon: ShieldCheck }, { id: 'socks', label: 'ساکس', icon: Wifi }, { id: 'chat', label: 'چت و پشتیبانی', icon: MessageCircle, dot: true }];
   const title = ({ dashboard: 'داشبورد', users: 'کاربران', plans: 'پلن‌ها', subscriptions: 'اشتراک‌ها', socks: 'ساکس', chat: 'چت و پشتیبانی' } as Record<string, string>)[section];
@@ -147,7 +160,7 @@ function App() {
       {section === 'plans' && <SubscriptionView token={token} plans={plans} onPlans={setPlans} onNotify={notify}/>}
       {section === 'subscriptions' && <UserSubscriptionsView token={token} plans={plans} subscriptions={userSubscriptions} busyIds={subscriptionBusy} onToggle={setUserBlocked} onUpdate={updated => setUserSubscriptions(current => current.map(item => item.userId === String(updated.userId) ? { ...item, ...updated, userId: String(updated.userId), blocked: item.blocked, active: new Date(updated.expiresAt).getTime() > Date.now() && Number(updated.usedBytes) < Number(updated.quotaBytes) } : item))} onNotify={notify}/>}
       {section === 'socks' && <SocksView token={token} onNotify={notify}/>}
-      {section === 'chat' && <section className="panel chat-panel"><div className="chat-heading"><div className="support-avatar"><MessageCircle size={20}/><i/></div><div><h2>پشتیبانی فیلترشکن</h2><p><i/> آنلاین و آماده پاسخ‌گویی</p></div><button className="icon-btn chat-more" onClick={() => notify('گفت‌وگو امن و رمزگذاری‌شده است.')}><MoreHorizontal size={20}/></button></div><div className="chat-body"><div className="chat-date"><span>امروز</span></div>{messages.map((msg, i) => <div key={`${i}-${msg.time}`} className={`message-row ${msg.author === 'شما' ? 'mine' : ''}`}><div className={`chat-avatar ${msg.author === 'شما' ? 'self' : ''}`}>{msg.author === 'شما' ? 'ش' : 'پ'}</div><div className="message-content"><span className="message-author">{msg.author}</span><div className="bubble">{msg.text}</div><span className="message-time">{msg.time}</span></div></div>)}</div><form className="chat-compose" onSubmit={sendMessage}><button className="attach-btn" type="button" onClick={() => notify('ارسال فایل به‌زودی فعال می‌شود.')}><Plus size={20}/></button><input placeholder="پیام خود را بنویسید..." value={draft} onChange={e => setDraft(e.target.value)}/><button className="send-btn" title="ارسال پیام"><Send size={17}/></button></form></section>}
+      {section === 'chat' && <section className="panel chat-panel"><div className="chat-heading"><div className="support-avatar"><MessageCircle size={20}/><i/></div><div className="admin-chat-head"><h2>پشتیبانی فیلترشکن</h2><select className="chat-user-select" aria-label="انتخاب کاربر" value={selectedChatUserId} onChange={event => setSelectedChatUserId(event.target.value)}><option value="">انتخاب کاربر</option>{conversations.map(conversation => <option key={conversation.userId} value={conversation.userId}>{conversation.name} · {conversation.username}</option>)}</select></div><button className="icon-btn chat-more" onClick={() => notify('گفت‌وگوها هر چند ثانیه تازه می‌شوند.')}><MoreHorizontal size={20}/></button></div><div className="chat-body">{messages.length ? messages.map(msg => { const mine = msg.senderRole === 'admin'; return <div key={msg.id} className={`message-row ${mine ? 'mine' : ''}`}><div className={`chat-avatar ${mine ? 'self' : ''}`}>{mine ? 'م' : (msg.author || 'ک').slice(0, 1)}</div><div className="message-content"><span className="message-author">{mine ? 'پشتیبانی' : msg.author}</span><div className="bubble">{msg.text}</div><span className="message-time">{msg.time}</span></div></div>; }) : <div className="empty-state">{selectedChatUserId ? 'پیامی در این گفت‌وگو نیست؛ اولین پیام را بفرستید.' : 'برای شروع گفت‌وگو یک کاربر انتخاب کنید.'}</div>}</div><form className="chat-compose" onSubmit={sendMessage}><button className="attach-btn" type="button" onClick={() => notify('ارسال فایل پشتیبانی نمی‌شود.')}><Plus size={20}/></button><input placeholder={selectedChatUserId ? 'پیام خود را بنویسید...' : 'ابتدا کاربر را انتخاب کنید'} value={draft} onChange={e => setDraft(e.target.value)} disabled={!selectedChatUserId}/><button className="send-btn" title="ارسال پیام" disabled={!selectedChatUserId}><Send size={17}/></button></form></section>}
       <footer className="page-footer"><span>© ۱۴۰۴ فیلترشکن</span><div><button onClick={() => notify('مرکز راهنما به‌زودی در دسترس خواهد بود.')}>راهنما</button><i/><button onClick={() => notify('وضعیت حریم خصوصی شما امن است.')}>حریم خصوصی</button><i/><button onClick={() => notify('نسخه ۱.۰.۰')}>نسخه ۱.۰.۰</button></div><span><Command size={13}/> ساخته‌شده برای مدیریت بهتر</span></footer>
     </div></main>{userModal && <div className="modal-scrim" onMouseDown={event => { if (event.target === event.currentTarget) setUserModal(false); }}><form className="user-dialog" onSubmit={saveUser}><div className="dialog-heading"><div><span>مدیریت حساب اپ</span><h2>{userForm.id ? 'ویرایش کاربر' : 'افزودن کاربر جدید'}</h2></div><button type="button" className="icon-btn" onClick={() => setUserModal(false)}><X size={18}/></button></div><label>نام نمایشی<input required minLength={2} maxLength={80} value={userForm.name} onChange={event => setUserForm({ ...userForm, name: event.target.value })} placeholder="نام و نام خانوادگی"/></label><label>ایمیل یا نام کاربری<input required value={userForm.username} onChange={event => setUserForm({ ...userForm, username: event.target.value })} placeholder="user@example.com"/></label><label>{userForm.id ? 'رمز تازه (اختیاری)' : 'رمز ورود اپ'}<input type="password" minLength={userForm.id && !userForm.password ? undefined : 8} autoComplete="new-password" required={!userForm.id} value={userForm.password} onChange={event => setUserForm({ ...userForm, password: event.target.value })} placeholder={userForm.id ? 'برای حفظ رمز قبلی خالی بگذارید' : 'حداقل ۸ نویسه'}/></label><div className="user-form-row"><label>اشتراک<select value={userForm.plan} onChange={event => setUserForm({ ...userForm, plan: event.target.value })}><option>آزمایشی</option><option>پایه</option><option>حرفه‌ای</option></select></label><label>وضعیت<input readOnly value="خودکار بر اساس اتصال VPN"/></label></div>{userError && <div className="user-form-error">{userError}</div>}<div className="dialog-actions"><button type="button" className="soft-btn" onClick={() => setUserModal(false)}>انصراف</button><button className="primary-btn" disabled={userBusy}>{userBusy ? 'در حال ذخیره...' : userForm.id ? 'ذخیره تغییرات' : 'ساخت حساب کاربر'}</button></div><p className="dialog-hint">کاربر می‌تواند با همین نام کاربری و رمز در اپ موبایل وارد شود.</p></form></div>}{toast && <div className="toast"><Check size={17}/>{toast}</div>}</div>;
 }
@@ -161,23 +174,35 @@ function lastSeenLabel(user: User) {
 }
 function UserTable({ users, loading, expanded = false, onEdit, onDelete }: { users: User[]; loading: boolean; expanded?: boolean; onEdit?: (user: User) => void; onDelete?: (user: User) => void }) { return <div className="table-scroll"><table><thead><tr><th>کاربر</th><th>وضعیت</th><th>نوع اشتراک</th><th>آخرین اتصال</th>{expanded && <th>عملیات</th>}</tr></thead><tbody>{loading ? <tr><td colSpan={expanded ? 5 : 4} className="empty-state">در حال دریافت اطلاعات...</td></tr> : users.length ? users.map(user => <tr key={user.id}><td><div className="user-cell"><div className={`avatar user-${user.id}`}>{user.name.slice(0, 1)}</div><div><b>{user.name}</b><span>{user.username}</span></div></div></td><td><span className={`status ${user.status === 'آنلاین' ? 'online' : 'offline'}`}><i/>{user.status}</span></td><td><span className={`plan-chip ${user.plan === 'حرفه‌ای' ? 'pro' : user.plan === 'پایه' ? 'basic' : 'trial'}`}>{user.plan}</span></td><td className="last-seen">{lastSeenLabel(user)}</td>{expanded && <td><div className="user-actions"><button className="icon-btn" title="ویرایش کاربر" onClick={() => onEdit?.(user)}><Pencil size={16}/></button><button className="icon-btn danger-action" title="حذف کاربر" onClick={() => onDelete?.(user)}><Trash2 size={16}/></button></div></td>}</tr>) : <tr><td colSpan={expanded ? 5 : 4} className="empty-state">کاربری پیدا نشد.</td></tr>}</tbody></table></div>; }
 function SocksView({ token, onNotify }: { token: string; onNotify: (text: string) => void }) {
-  const [form, setForm] = useState({ host: '', port: 1080, username: '', password: '' });
-  const [loading, setLoading] = useState(true); const [saving, setSaving] = useState(false);
+  const [proxies, setProxies] = useState<ProxyEntry[]>([]); const [draft, setDraft] = useState<Partial<ProxyEntry> | null>(null);
+  const [loading, setLoading] = useState(true); const [saving, setSaving] = useState(false); const [error, setError] = useState('');
+  const refresh = async (signal?: AbortSignal) => { const rows = await api<ProxyEntry[]>('/api/proxies', token, signal); setProxies(rows); };
   useEffect(() => {
     const controller = new AbortController();
-    api<any>('/api/proxy', token, controller.signal).then(value => { if (value) setForm({ host: value.host || '', port: Number(value.port) || 1080, username: value.username || '', password: value.password || '' }); }).catch(() => {}).finally(() => setLoading(false));
+    refresh(controller.signal).catch(() => {}).finally(() => setLoading(false));
     return () => controller.abort();
   }, [token]);
   const save = async (event: React.FormEvent) => {
-    event.preventDefault(); setSaving(true);
+    event.preventDefault(); if (!draft) return; setSaving(true); setError('');
     try {
-      const response = await fetch('/api/proxy', { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify(form) });
-      const result = await response.json(); if (!response.ok) throw new Error(result.message || 'ذخیره تنظیمات ساکس انجام نشد.');
-      setForm({ host: result.host, port: Number(result.port), username: result.username || '', password: result.password || '' }); onNotify('پروکسی سرور ذخیره شد و اپ‌ها هنگام بازشدن آن را دریافت می‌کنند.');
-    } catch (error) { onNotify(error instanceof Error ? error.message : 'ذخیره تنظیمات ساکس انجام نشد.'); }
+      const editing = Boolean(draft.id); const response = await fetch(`/api/proxies${editing ? `?id=${draft.id}` : ''}`, { method: editing ? 'PATCH' : 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ ...draft, port: Number(draft.port), active: draft.active ?? true }) });
+      const result = await response.json(); if (!response.ok) throw new Error(result.message || 'ذخیره ساکس انجام نشد.');
+      await refresh(); setDraft(null); onNotify('ساکس ذخیره شد. اپ‌ها از میان ساکس‌های فعال به‌صورت تصادفی انتخاب می‌کنند.');
+    } catch (error) { setError(error instanceof Error ? error.message : 'ذخیره ساکس انجام نشد.'); }
     finally { setSaving(false); }
   };
-  return <section className="panel full-panel"><div className="panel-head"><div><h2>تنظیم پروکسی ساکس</h2><p>اپ موبایل پس از ورود، این تنظیمات را به‌طور خودکار دریافت می‌کند.</p></div><span className="date-chip"><i/>{form.host ? 'پروکسی تنظیم شده' : 'نیاز به تنظیم'}</span></div><form className="user-dialog socks-form" onSubmit={save}><label>آدرس IP یا میزبان<input required maxLength={253} value={form.host} onChange={event => setForm({ ...form, host: event.target.value })} placeholder="مثال: 203.0.113.10"/></label><div className="user-form-row"><label>پورت<input type="number" min="1" max="65535" required value={form.port} onChange={event => setForm({ ...form, port: Number(event.target.value) })}/></label><label>نام کاربری<input autoComplete="off" value={form.username} onChange={event => setForm({ ...form, username: event.target.value })}/></label></div><label>رمز عبور<input type="password" autoComplete="new-password" value={form.password} onChange={event => setForm({ ...form, password: event.target.value })}/></label><div className="dialog-actions"><button className="primary-btn" disabled={saving || loading}>{saving ? 'در حال ذخیره...' : loading ? 'در حال دریافت...' : 'ذخیره پروکسی'}</button></div><p className="dialog-hint">اطلاعات ورود فقط برای کاربران واردشده با اشتراک فعال ارسال می‌شود.</p></form></section>;
+  const toggleActive = async (proxy: ProxyEntry) => {
+    try { const response = await fetch(`/api/proxies?id=${proxy.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ ...proxy, active: !proxy.active }) }); const result = await response.json(); if (!response.ok) throw new Error(result.message || 'تغییر وضعیت انجام نشد.'); setProxies(current => current.map(item => item.id === proxy.id ? result : item)); }
+    catch (error) { onNotify(error instanceof Error ? error.message : 'تغییر وضعیت انجام نشد.'); }
+  };
+  const remove = async (proxy: ProxyEntry) => {
+    if (!window.confirm(`ساکس «${proxy.name}» حذف شود؟`)) return;
+    try { const response = await fetch(`/api/proxies?id=${proxy.id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } }); const result = await response.json(); if (!response.ok) throw new Error(result.message || 'حذف ساکس انجام نشد.'); setProxies(current => current.filter(item => item.id !== proxy.id)); onNotify('ساکس حذف شد.'); }
+    catch (error) { onNotify(error instanceof Error ? error.message : 'حذف ساکس انجام نشد.'); }
+  };
+  const openNew = () => { setError(''); setDraft({ name: '', host: '', port: 1080, username: '', password: '', active: true }); };
+  return <><section className="panel full-panel"><div className="panel-head"><div><h2>مدیریت ساکس‌ها</h2><p>اپ موبایل بعد از ورود، یکی از ساکس‌های فعال را به‌صورت تصادفی دریافت می‌کند.</p></div><button className="primary-btn" onClick={openNew}><Plus size={16}/> افزودن ساکس</button></div><div className="table-scroll"><table><thead><tr><th>نام</th><th>IP / میزبان</th><th>پورت</th><th>نام کاربری</th><th>وضعیت</th><th>عملیات</th></tr></thead><tbody>{loading ? <tr><td colSpan={6} className="empty-state">در حال دریافت فهرست ساکس‌ها...</td></tr> : proxies.length ? proxies.map(proxy => <tr key={proxy.id}><td><b>{proxy.name}</b></td><td>{proxy.host}</td><td>{proxy.port.toLocaleString('fa-IR')}</td><td>{proxy.username || 'بدون احراز هویت'}</td><td><button type="button" role="switch" aria-checked={proxy.active} className={`access-switch ${proxy.active ? '' : 'is-blocked'}`} onClick={() => toggleActive(proxy)}><span/><b>{proxy.active ? 'فعال' : 'غیرفعال'}</b></button></td><td><div className="user-actions"><button type="button" className="icon-btn" title="ویرایش ساکس" onClick={() => { setError(''); setDraft({ ...proxy }); }}><Pencil size={16}/></button><button type="button" className="icon-btn danger-action" title="حذف ساکس" onClick={() => remove(proxy)}><Trash2 size={16}/></button></div></td></tr>) : <tr><td colSpan={6} className="empty-state">هنوز ساکسی اضافه نشده است.</td></tr>}</tbody></table></div><p className="dialog-hint">رمزهای عبور فقط در پنل مدیر و هنگام ارسال امن به اپ نمایش داده می‌شوند.</p></section>
+    {draft && <div className="modal-scrim" onMouseDown={event => { if (event.target === event.currentTarget) setDraft(null); }}><form className="user-dialog" onSubmit={save}><div className="dialog-heading"><div><span>مدیریت پراکسی سرور</span><h2>{draft.id ? 'ویرایش ساکس' : 'ساکس جدید'}</h2></div><button type="button" className="icon-btn" onClick={() => setDraft(null)}><X size={18}/></button></div><label>نام ساکس<input required minLength={2} maxLength={80} value={draft.name || ''} onChange={event => setDraft({ ...draft, name: event.target.value })} placeholder="مثلاً سرور آلمان ۱"/></label><label>آدرس IP یا میزبان<input required maxLength={253} value={draft.host || ''} onChange={event => setDraft({ ...draft, host: event.target.value })} placeholder="203.0.113.10"/></label><div className="user-form-row"><label>پورت<input type="number" min="1" max="65535" required value={draft.port || ''} onChange={event => setDraft({ ...draft, port: Number(event.target.value) })}/></label><label>نام کاربری<input autoComplete="off" value={draft.username || ''} onChange={event => setDraft({ ...draft, username: event.target.value })}/></label></div><label>رمز عبور<input type="password" autoComplete="new-password" value={draft.password || ''} onChange={event => setDraft({ ...draft, password: event.target.value })}/></label>{error && <div className="user-form-error">{error}</div>}<div className="dialog-actions"><button type="button" className="soft-btn" onClick={() => setDraft(null)}>انصراف</button><button className="primary-btn" disabled={saving}>{saving ? 'در حال ذخیره...' : 'ذخیره ساکس'}</button></div></form></div>}</>;
 }
 function UserSubscriptionsView({ token, plans, subscriptions, busyIds, onToggle, onUpdate, onNotify }: { token: string; plans: any[]; subscriptions: UserSubscription[]; busyIds: string[]; onToggle: (subscription: UserSubscription, blocked: boolean) => void; onUpdate: (subscription: any) => void; onNotify: (text: string) => void }) {
   const [draft, setDraft] = useState<UserSubscription | null>(null);

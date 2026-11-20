@@ -76,6 +76,47 @@ return async function handler(req: any, res: any) {
       return reply(res, 200, result.rows[0]);
     }
 
+    if (pathname === '/api/proxies' && method === 'GET') {
+      const result = await database.query(`SELECT id,name,host,port,username,password,active,updated_at AS "updatedAt"
+        FROM proxy_servers ORDER BY id DESC`);
+      return reply(res, 200, result.rows);
+    }
+
+    if (pathname === '/api/proxies' && method === 'DELETE') {
+      const id = Number(new URL(req.url || '/', 'http://localhost').searchParams.get('id'));
+      if (!Number.isSafeInteger(id) || id < 1) return reply(res, 400, { message: 'شناسه ساکس معتبر نیست.' });
+      const result = await database.query('DELETE FROM proxy_servers WHERE id=$1 RETURNING id', [id]);
+      if (!result.rows[0]) return reply(res, 404, { message: 'ساکس پیدا نشد.' });
+      return reply(res, 200, { success: true, id: result.rows[0].id });
+    }
+
+    if (pathname === '/api/proxies' && (method === 'POST' || method === 'PATCH')) {
+      const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
+      const name = typeof body.name === 'string' ? body.name.trim() : '';
+      const host = typeof body.host === 'string' ? body.host.trim() : '';
+      const port = Number(body.port);
+      const username = typeof body.username === 'string' ? body.username : '';
+      const password = typeof body.password === 'string' ? body.password : '';
+      const active = body.active === undefined ? true : body.active;
+      if (name.length < 2 || name.length > 80 || !host || host.length > 253 || /\s/.test(host) ||
+          !Number.isInteger(port) || port < 1 || port > 65535 || username.length > 255 || password.length > 512 || typeof active !== 'boolean') {
+        return reply(res, 400, { message: 'مشخصات ساکس معتبر نیست.' });
+      }
+      if (method === 'POST') {
+        const result = await database.query(`INSERT INTO proxy_servers(name,host,port,username,password,active)
+          VALUES($1,$2,$3,$4,$5,$6) RETURNING id,name,host,port,username,password,active,updated_at AS "updatedAt"`,
+        [name, host, port, username, password, active]);
+        return reply(res, 201, result.rows[0]);
+      }
+      const id = Number(new URL(req.url || '/', 'http://localhost').searchParams.get('id'));
+      if (!Number.isSafeInteger(id) || id < 1) return reply(res, 400, { message: 'شناسه ساکس معتبر نیست.' });
+      const result = await database.query(`UPDATE proxy_servers SET name=$2,host=$3,port=$4,username=$5,password=$6,active=$7,updated_at=NOW()
+        WHERE id=$1 RETURNING id,name,host,port,username,password,active,updated_at AS "updatedAt"`,
+      [id, name, host, port, username, password, active]);
+      if (!result.rows[0]) return reply(res, 404, { message: 'ساکس پیدا نشد.' });
+      return reply(res, 200, result.rows[0]);
+    }
+
     if (pathname === '/api/user-subscriptions' && method === 'GET') {
       const subscriptions = await database.query(`SELECT u.id AS "userId",u.name AS "userName",u.username,p.id AS "planId",p.name AS "planName",p.duration_days AS "durationDays",
         u.subscription_started_at AS "startedAt",u.subscription_expires_at AS "expiresAt",
@@ -278,21 +319,35 @@ return async function handler(req: any, res: any) {
       return reply(res, 200, { success: true, id: deleted.rows[0].id });
     }
 
+    if (pathname === '/api/chat/conversations' && method === 'GET') {
+      const conversations = await database.query(`SELECT u.id AS "userId",u.name,u.username,
+        latest.message AS "lastMessage",latest.created_at AS "lastMessageAt"
+        FROM users u LEFT JOIN LATERAL (SELECT message,created_at FROM chat_messages m WHERE m.user_id=u.id ORDER BY m.id DESC LIMIT 1) latest ON TRUE
+        ORDER BY latest.created_at DESC NULLS LAST,u.id DESC`);
+      return reply(res, 200, conversations.rows);
+    }
+
     if (pathname === '/api/chat' && method === 'GET') {
-      const messages = await database.query(
-        'SELECT id, author, message AS text, created_at AS time FROM chat_messages ORDER BY created_at DESC LIMIT 100',
-      );
+      const userId = Number(new URL(req.url || '/', 'http://localhost').searchParams.get('userId'));
+      if (!Number.isSafeInteger(userId) || userId < 1) return reply(res, 400, { message: 'کاربر گفت‌وگو را انتخاب کنید.' });
+      const messages = await database.query(`SELECT id,user_id AS "userId",author,message AS text,created_at AS time,sender_role AS "senderRole"
+        FROM chat_messages WHERE user_id=$1 ORDER BY id DESC LIMIT 200`, [userId]);
       return reply(res, 200, messages.rows.reverse());
     }
 
     if (pathname === '/api/chat' && method === 'POST') {
       const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
       const message = String(body.message || '').trim();
-      if (!message) return reply(res, 400, { message: 'پیام خالی است.' });
-      const inserted = await database.query(
-        "INSERT INTO chat_messages (author, message) VALUES ('شما', $1) RETURNING id, author, message AS text, created_at AS time",
-        [message],
-      );
+      const userId = Number(body.userId);
+      if (!message || message.length > 4000) return reply(res, 400, { message: 'پیام باید بین ۱ تا ۴۰۰۰ نویسه باشد.' });
+      if (!Number.isSafeInteger(userId) || userId < 1) return reply(res, 400, { message: 'کاربر گفت‌وگو را انتخاب کنید.' });
+      const admin = await database.query<any>('SELECT admin_username FROM sessions WHERE token=$1 AND expires_at>NOW()', [token]);
+      if (!admin.rows[0]) return reply(res, 401, { message: 'نشست شما منقضی شده است.' });
+      const inserted = await database.query(`INSERT INTO chat_messages(user_id,sender_role,author,message)
+        SELECT $1,'admin',$2,$3 WHERE EXISTS(SELECT 1 FROM users WHERE id=$1)
+        RETURNING id,user_id AS "userId",author,message AS text,created_at AS time,sender_role AS "senderRole"`,
+      [userId, admin.rows[0].admin_username, message]);
+      if (!inserted.rows[0]) return reply(res, 404, { message: 'کاربر پیدا نشد.' });
       return reply(res, 200, inserted.rows[0]);
     }
 

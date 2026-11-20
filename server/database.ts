@@ -35,10 +35,25 @@ export async function initializeSchema(database: Pick<Pool, 'query'>) {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
     CREATE INDEX IF NOT EXISTS chat_messages_created_at_idx ON chat_messages(created_at);
+    ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS user_id BIGINT REFERENCES users(id) ON DELETE SET NULL;
+    ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS sender_role TEXT NOT NULL DEFAULT 'admin' CHECK (sender_role IN ('admin','user'));
+    CREATE INDEX IF NOT EXISTS chat_messages_user_created_idx ON chat_messages(user_id,created_at);
     CREATE TABLE IF NOT EXISTS proxy_settings (
       id INTEGER PRIMARY KEY CHECK (id = 1), host TEXT NOT NULL, port INTEGER NOT NULL CHECK (port BETWEEN 1 AND 65535),
       username TEXT NOT NULL DEFAULT '', password TEXT NOT NULL DEFAULT '', updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+    CREATE TABLE IF NOT EXISTS proxy_servers (
+      id BIGSERIAL PRIMARY KEY, name TEXT NOT NULL, host TEXT NOT NULL,
+      port INTEGER NOT NULL CHECK (port BETWEEN 1 AND 65535), username TEXT NOT NULL DEFAULT '', password TEXT NOT NULL DEFAULT '',
+      active BOOLEAN NOT NULL DEFAULT TRUE, legacy_settings_id INTEGER UNIQUE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS system_migrations (version TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+    INSERT INTO proxy_servers(name,host,port,username,password,active,legacy_settings_id)
+      SELECT 'پروکسی اصلی',p.host,p.port,p.username,p.password,TRUE,1 FROM proxy_settings p
+      WHERE p.id=1 AND NOT EXISTS(SELECT 1 FROM system_migrations WHERE version='legacy-proxy-to-list-v1')
+      ON CONFLICT(legacy_settings_id) DO NOTHING;
+    INSERT INTO system_migrations(version) VALUES('legacy-proxy-to-list-v1') ON CONFLICT(version) DO NOTHING;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS last_vpn_seen TIMESTAMPTZ;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_started_at TIMESTAMPTZ;
