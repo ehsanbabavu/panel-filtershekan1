@@ -56,6 +56,26 @@ return async function handler(req: any, res: any) {
     );
     if (!session.rowCount) return reply(res, 401, { message: 'نشست شما منقضی شده است؛ دوباره وارد شوید.' });
 
+    if (pathname === '/api/proxy' && method === 'GET') {
+      const result = await database.query('SELECT host,port,username,password,updated_at AS "updatedAt" FROM proxy_settings WHERE id=1');
+      return reply(res, 200, result.rows[0] || null);
+    }
+
+    if (pathname === '/api/proxy' && method === 'PUT') {
+      const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
+      const host = typeof body.host === 'string' ? body.host.trim() : '';
+      const port = Number(body.port);
+      const username = typeof body.username === 'string' ? body.username : '';
+      const password = typeof body.password === 'string' ? body.password : '';
+      if (!host || host.length > 253 || /\s/.test(host) || !Number.isInteger(port) || port < 1 || port > 65535 || username.length > 255 || password.length > 512) {
+        return reply(res, 400, { message: 'آدرس، پورت یا مشخصات ورود پروکسی معتبر نیست.' });
+      }
+      const result = await database.query(`INSERT INTO proxy_settings(id,host,port,username,password) VALUES(1,$1,$2,$3,$4)
+        ON CONFLICT(id) DO UPDATE SET host=EXCLUDED.host,port=EXCLUDED.port,username=EXCLUDED.username,password=EXCLUDED.password,updated_at=NOW()
+        RETURNING host,port,username,password,updated_at AS "updatedAt"`, [host, port, username, password]);
+      return reply(res, 200, result.rows[0]);
+    }
+
     if (pathname === '/api/user-subscriptions' && method === 'GET') {
       const subscriptions = await database.query(`SELECT u.id AS "userId",u.name AS "userName",u.username,p.id AS "planId",p.name AS "planName",p.duration_days AS "durationDays",
         u.subscription_started_at AS "startedAt",u.subscription_expires_at AS "expiresAt",

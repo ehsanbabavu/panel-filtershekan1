@@ -65,6 +65,18 @@ app.get('/api/users', async (_req, res, next) => {
   } catch (error) { next(error); }
 });
 
+app.get('/api/proxy',async(_req,res,next)=>{try{
+  const result=await pool.query('SELECT host,port,username,password,updated_at AS "updatedAt" FROM proxy_settings WHERE id=1');res.json(result.rows[0]||null);
+}catch(error){next(error);}});
+
+app.put('/api/proxy',async(req,res,next)=>{try{
+  const host=typeof req.body?.host==='string'?req.body.host.trim():'',port=Number(req.body?.port),username=typeof req.body?.username==='string'?req.body.username:'',password=typeof req.body?.password==='string'?req.body.password:'';
+  if(!host||host.length>253||/\s/.test(host)||!Number.isInteger(port)||port<1||port>65535||username.length>255||password.length>512)return res.status(400).json({message:'آدرس، پورت یا مشخصات ورود پروکسی معتبر نیست.'});
+  const result=await pool.query(`INSERT INTO proxy_settings(id,host,port,username,password) VALUES(1,$1,$2,$3,$4)
+    ON CONFLICT(id) DO UPDATE SET host=EXCLUDED.host,port=EXCLUDED.port,username=EXCLUDED.username,password=EXCLUDED.password,updated_at=NOW()
+    RETURNING host,port,username,password,updated_at AS "updatedAt"`,[host,port,username,password]);res.json(result.rows[0]);
+}catch(error){next(error);}});
+
 app.get('/api/subscriptions', async (_req, res, next) => {
   try { const result=await pool.query(`SELECT p.id,p.name,p.description,p.price_irr AS "priceIrr",p.quota_bytes AS "quotaBytes",
     p.duration_days AS "durationDays",p.simultaneous_devices AS "simultaneousDevices",p.features,p.active,COUNT(u.id)::int AS users

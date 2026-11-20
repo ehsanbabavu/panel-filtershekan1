@@ -11,7 +11,7 @@ function bodyOf(req: any) {
 
 export async function handleMobileRequest(action: string, req: any, res: any, database: MobileDatabase) {
   const method = String(req.method || 'GET').toUpperCase();
-  if (!['register', 'login', 'me', 'logout', 'presence', 'usage'].includes(action)) {
+  if (!['register', 'login', 'me', 'logout', 'presence', 'usage', 'proxy'].includes(action)) {
     return reply(res, 404, { message: 'مسیر پیدا نشد.' });
   }
 
@@ -71,6 +71,20 @@ export async function handleMobileRequest(action: string, req: any, res: any, da
   }
 
   const token = String(req.headers?.authorization || '').replace(/^Bearer\s+/i, '');
+  if (action === 'proxy' && method === 'GET') {
+    if (!token) return reply(res, 401, { message: 'برای دریافت پروکسی وارد حساب شوید.' });
+    const access = await database.query<any>(`SELECT u.blocked,u.subscription_expires_at,u.subscription_quota_bytes,u.subscription_used_bytes
+      FROM app_user_sessions s JOIN users u ON u.id=s.user_id
+      WHERE s.token=$1 AND (s.expires_at IS NULL OR s.expires_at>NOW())`, [token]);
+    if (!access.rows[0]) return reply(res, 401, { message: 'نشست شما منقضی شده است.' });
+    const user = access.rows[0];
+    if (user.blocked || !user.subscription_expires_at || new Date(user.subscription_expires_at).getTime() <= Date.now() || BigInt(user.subscription_used_bytes || 0) >= BigInt(user.subscription_quota_bytes || 0)) {
+      return reply(res, 403, { message: 'برای دریافت پروکسی به اشتراک فعال نیاز دارید.' });
+    }
+    const config = await database.query<any>('SELECT host,port,username,password,updated_at AS "updatedAt" FROM proxy_settings WHERE id=1');
+    if (!config.rows[0]) return reply(res, 404, { message: 'پروکسی در پنل تنظیم نشده است.' });
+    return reply(res, 200, { ...config.rows[0], type: 'socks5', name: 'پروکسی سرور' });
+  }
   if (action === 'usage' && method === 'GET') {
     if (!token) return reply(res, 401, { message: 'برای ادامه وارد شوید.' });
     const result = await database.query<any>(`SELECT u.id AS user_id,u.name,u.username,u.plan,u.blocked,u.subscription_started_at,
