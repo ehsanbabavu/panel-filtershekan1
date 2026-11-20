@@ -24,13 +24,15 @@ export function selectUsers(database: Pick<Pool, 'query'>, id?: string) {
   );
 }
 
-export async function reportPresence(database: MobileDatabase, token: string, connected: boolean, sequence: number) {
+export async function reportPresence(database: MobileDatabase, token: string, connected: boolean, sequence: number, cumulativeBytes?: number) {
   const client = await database.connect();
   try {
     await client.query('BEGIN');
-    const session = await client.query<{ user_id: string; vpn_sequence: string }>(
-      `SELECT user_id, vpn_sequence FROM app_user_sessions
-       WHERE token = $1 AND (expires_at IS NULL OR expires_at > NOW()) FOR UPDATE`,
+    const session = await client.query<any>(
+      `SELECT s.user_id, s.vpn_sequence, u.name, u.username, u.plan, u.subscription_started_at,
+        u.subscription_expires_at, u.subscription_quota_bytes, u.subscription_used_bytes
+       FROM app_user_sessions s JOIN users u ON u.id=s.user_id
+       WHERE s.token = $1 AND (s.expires_at IS NULL OR s.expires_at > NOW()) FOR UPDATE OF s,u`,
       [token],
     );
     const row = session.rows[0];
@@ -41,23 +43,55 @@ export async function reportPresence(database: MobileDatabase, token: string, co
     // A delayed heartbeat must never undo a newer disconnect.
     if (sequence <= Number(row.vpn_sequence)) {
       await client.query('COMMIT');
-      return { authorized: true, applied: false };
+      return { authorized: true, applied: false, subscription: subscriptionOf(row) };
     }
+    let used = BigInt(row.subscription_used_bytes || 0);
+    const quota = BigInt(row.subscription_quota_bytes || 0);
+    const active = Boolean(row.subscription_expires_at && new Date(row.subscription_expires_at).getTime() > Date.now());
+    if (connected && (!active || used >= quota)) {
+      await client.query(`UPDATE app_user_sessions SET vpn_connected=FALSE,vpn_heartbeat_at=NULL,vpn_sequence=$2 WHERE token=$1`, [token,sequence]);
+      await client.query('COMMIT');
+      return { authorized: true, applied: false, denied: true, subscription: { ...subscriptionOf(row), canConnect: false, exhausted: true } };
+    }
+    if (connected && cumulativeBytes !== undefined) {
+      const prior = await client.query<any>('SELECT cumulative_bytes FROM mobile_usage_reports WHERE user_id=$1 AND token=$2 FOR UPDATE', [row.user_id, token]);
+      let delta = BigInt(cumulativeBytes);
+      if (prior.rows[0]) {
+        const previous = BigInt(prior.rows[0].cumulative_bytes);
+        delta = BigInt(cumulativeBytes) >= previous ? BigInt(cumulativeBytes) - previous : BigInt(cumulativeBytes);
+      }
+      await client.query(`INSERT INTO mobile_usage_reports(user_id,token,sequence,cumulative_bytes) VALUES($1,$2,$3,$4)
+        ON CONFLICT(user_id,token) DO UPDATE SET sequence=EXCLUDED.sequence,cumulative_bytes=EXCLUDED.cumulative_bytes,updated_at=NOW()`,
+      [row.user_id,token,sequence,cumulativeBytes]);
+      used = used + delta > quota ? quota : used + delta;
+      await client.query('UPDATE users SET subscription_used_bytes=$1 WHERE id=$2', [used.toString(),row.user_id]);
+      row.subscription_used_bytes = used.toString();
+    }
+    const canConnect = active && used < quota;
     await client.query(
       `UPDATE app_user_sessions
        SET vpn_connected = $2, vpn_heartbeat_at = CASE WHEN $2 THEN clock_timestamp() ELSE NULL END,
            vpn_sequence = $3 WHERE token = $1`,
-      [token, connected, sequence],
+      [token, connected && canConnect, sequence],
     );
     if (connected) {
       await client.query('UPDATE users SET last_vpn_seen = clock_timestamp() WHERE id = $1', [row.user_id]);
     }
     await client.query('COMMIT');
-    return { authorized: true, applied: true };
+    const subscription = subscriptionOf(row);
+    return { authorized: true, applied: true, subscription, denied: connected && !subscription.canConnect };
   } catch (error) {
     await client.query('ROLLBACK');
     throw error;
   } finally {
     client.release();
   }
+}
+
+function subscriptionOf(row: any) {
+  const quota = BigInt(row.subscription_quota_bytes || 0), used = BigInt(row.subscription_used_bytes || 0);
+  const canConnect = Boolean(row.subscription_expires_at && new Date(row.subscription_expires_at).getTime() > Date.now() && used < quota);
+  return { id: row.user_id, name: row.name, username: row.username, plan: row.plan,
+    subscriptionStartedAt: row.subscription_started_at, subscriptionExpiresAt: row.subscription_expires_at,
+    subscriptionQuotaBytes: quota.toString(), subscriptionUsedBytes: used.toString(), canConnect, exhausted: !canConnect };
 }

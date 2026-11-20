@@ -37,6 +37,29 @@ export async function initializeSchema(database: Pick<Pool, 'query'>) {
     CREATE INDEX IF NOT EXISTS chat_messages_created_at_idx ON chat_messages(created_at);
     ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS last_vpn_seen TIMESTAMPTZ;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_started_at TIMESTAMPTZ;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_expires_at TIMESTAMPTZ;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_quota_bytes BIGINT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_used_bytes BIGINT NOT NULL DEFAULT 0;
+    CREATE TABLE IF NOT EXISTS subscription_plans (
+      id BIGSERIAL PRIMARY KEY, name TEXT NOT NULL UNIQUE, description TEXT NOT NULL DEFAULT '',
+      price_irr BIGINT NOT NULL DEFAULT 0 CHECK (price_irr >= 0), quota_bytes BIGINT NOT NULL CHECK (quota_bytes > 0),
+      duration_days INTEGER NOT NULL CHECK (duration_days > 0), simultaneous_devices INTEGER NOT NULL DEFAULT 1 CHECK (simultaneous_devices > 0),
+      features JSONB NOT NULL DEFAULT '[]'::jsonb, active BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS user_subscriptions (
+      id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      plan_id BIGINT NOT NULL REFERENCES subscription_plans(id), started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      expires_at TIMESTAMPTZ NOT NULL, quota_bytes BIGINT NOT NULL CHECK (quota_bytes > 0), used_bytes BIGINT NOT NULL DEFAULT 0 CHECK (used_bytes >= 0),
+      status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','expired','exhausted','cancelled')), created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS user_subscriptions_user_active_idx ON user_subscriptions(user_id, expires_at DESC);
+    CREATE TABLE IF NOT EXISTS mobile_usage_reports (
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, token TEXT NOT NULL,
+      sequence BIGINT NOT NULL, cumulative_bytes BIGINT NOT NULL CHECK (cumulative_bytes >= 0),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY(user_id, token)
+    );
     CREATE TABLE IF NOT EXISTS app_user_sessions (
       token TEXT PRIMARY KEY,
       user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -49,6 +72,20 @@ export async function initializeSchema(database: Pick<Pool, 'query'>) {
     ALTER TABLE app_user_sessions ADD COLUMN IF NOT EXISTS vpn_sequence BIGINT NOT NULL DEFAULT 0;
     CREATE INDEX IF NOT EXISTS app_user_sessions_user_id_idx ON app_user_sessions(user_id);
   `);
+  await database.query(`INSERT INTO subscription_plans(name,description,price_irr,quota_bytes,duration_days,simultaneous_devices,features)
+    VALUES ('حرفه‌ای','برای تجربه‌ای کامل و بدون محدودیت',299000,107374182400,30,5,'["۱۰۰ گیگابایت حجم","اتصال هم‌زمان تا ۵ دستگاه","پشتیبانی اولویت‌دار"]'),
+    ('پایه','تمام چیزهایی که برای شروع نیاز دارید',149000,107374182400,30,2,'["۱۰۰ گیگابایت حجم","اتصال هم‌زمان تا ۲ دستگاه","پشتیبانی استاندارد"]'),
+    ('آزمایشی','آشنایی با سرویس',0,10737418240,7,1,'["۱۰ گیگابایت حجم","اتصال برای ۷ روز","پشتیبانی استاندارد"]') ON CONFLICT(name) DO NOTHING`);
+  await database.query(`UPDATE users u SET subscription_started_at=COALESCE(u.subscription_started_at,u.created_at),
+    subscription_expires_at=COALESCE(u.subscription_expires_at,u.created_at+CASE WHEN u.plan='آزمایشی' THEN INTERVAL '7 days' ELSE INTERVAL '30 days' END),
+    subscription_quota_bytes=COALESCE(u.subscription_quota_bytes,p.quota_bytes)
+    FROM subscription_plans p WHERE p.name=u.plan AND (u.subscription_started_at IS NULL OR u.subscription_expires_at IS NULL OR u.subscription_quota_bytes IS NULL)`);
+  await database.query(`INSERT INTO user_subscriptions(user_id,plan_id,started_at,expires_at,quota_bytes,used_bytes,status)
+    SELECT u.id,p.id,u.subscription_started_at,u.subscription_expires_at,u.subscription_quota_bytes,u.subscription_used_bytes,
+      CASE WHEN u.subscription_expires_at<=NOW() THEN 'expired' WHEN u.subscription_used_bytes>=u.subscription_quota_bytes THEN 'exhausted' ELSE 'active' END
+    FROM users u JOIN subscription_plans p ON p.name=u.plan
+    WHERE u.subscription_started_at IS NOT NULL AND u.subscription_expires_at IS NOT NULL AND u.subscription_quota_bytes IS NOT NULL
+      AND NOT EXISTS(SELECT 1 FROM user_subscriptions s WHERE s.user_id=u.id)`);
   // Existing mobile accounts stay signed in; a login is separate from VPN presence.
   await database.query('UPDATE app_user_sessions SET expires_at = NULL WHERE expires_at IS NOT NULL');
   const adminHash = await bcrypt.hash(process.env.ADMIN_PASSWORD || '232111Eee@', 10);

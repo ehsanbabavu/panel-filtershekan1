@@ -11,7 +11,7 @@ function bodyOf(req: any) {
 
 export async function handleMobileRequest(action: string, req: any, res: any, database: MobileDatabase) {
   const method = String(req.method || 'GET').toUpperCase();
-  if (!['register', 'login', 'me', 'logout', 'presence'].includes(action)) {
+  if (!['register', 'login', 'me', 'logout', 'presence', 'usage'].includes(action)) {
     return reply(res, 404, { message: 'مسیر پیدا نشد.' });
   }
 
@@ -40,6 +40,11 @@ export async function handleMobileRequest(action: string, req: any, res: any, da
         [name, username, passwordHash],
       );
       const user = created.rows[0];
+      await database.query(`UPDATE users SET subscription_started_at=NOW(),subscription_expires_at=NOW()+INTERVAL '7 days',
+        subscription_quota_bytes=(SELECT quota_bytes FROM subscription_plans WHERE name='آزمایشی'),subscription_used_bytes=0 WHERE id=$1`, [user.id]);
+      await database.query(`INSERT INTO user_subscriptions(user_id,plan_id,started_at,expires_at,quota_bytes,used_bytes,status)
+        SELECT u.id,p.id,u.subscription_started_at,u.subscription_expires_at,u.subscription_quota_bytes,0,'active'
+        FROM users u JOIN subscription_plans p ON p.name=u.plan WHERE u.id=$1`, [user.id]);
       const token = crypto.randomUUID();
       await database.query('INSERT INTO app_user_sessions (token, user_id) VALUES ($1, $2)', [token, user.id]);
       return reply(res, 201, { token, ...user });
@@ -66,14 +71,31 @@ export async function handleMobileRequest(action: string, req: any, res: any, da
   }
 
   const token = String(req.headers?.authorization || '').replace(/^Bearer\s+/i, '');
+  if (action === 'usage' && method === 'GET') {
+    if (!token) return reply(res, 401, { message: 'برای ادامه وارد شوید.' });
+    const result = await database.query<any>(`SELECT u.id AS user_id,u.name,u.username,u.plan,u.subscription_started_at,
+      u.subscription_expires_at,u.subscription_quota_bytes,u.subscription_used_bytes
+      FROM app_user_sessions s JOIN users u ON u.id=s.user_id
+      WHERE s.token=$1 AND (s.expires_at IS NULL OR s.expires_at>NOW())`, [token]);
+    if (!result.rows[0]) return reply(res, 401, { message: 'نشست شما منقضی شده است.' });
+    const row=result.rows[0], quota=BigInt(row.subscription_quota_bytes||0), used=BigInt(row.subscription_used_bytes||0);
+    const canConnect=Boolean(row.subscription_expires_at&&new Date(row.subscription_expires_at).getTime()>Date.now()&&used<quota);
+    return reply(res,200,{id:row.user_id,name:row.name,username:row.username,plan:row.plan,
+      subscriptionStartedAt:row.subscription_started_at,subscriptionExpiresAt:row.subscription_expires_at,
+      subscriptionQuotaBytes:quota.toString(),subscriptionUsedBytes:used.toString(),canConnect,exhausted:!canConnect});
+  }
   if (action === 'presence' && method === 'POST') {
     if (!token) return reply(res, 401, { message: 'برای ادامه وارد شوید.' });
     const body = bodyOf(req);
     if (typeof body.connected !== 'boolean' || !Number.isSafeInteger(body.sequence) || body.sequence < 1) {
       return reply(res, 400, { message: 'وضعیت اتصال یا شماره گزارش معتبر نیست.' });
     }
-    const result = await reportPresence(database, token, body.connected, body.sequence);
+    const cumulativeBytes = body.cumulativeBytes === undefined ? undefined : Number(body.cumulativeBytes);
+    if (cumulativeBytes !== undefined && (!Number.isSafeInteger(cumulativeBytes) || cumulativeBytes < 0)) return reply(res,400,{message:'گزارش مصرف معتبر نیست.'});
+    const result = await reportPresence(database, token, body.connected, body.sequence, cumulativeBytes);
     if (!result.authorized) return reply(res, 401, { message: 'نشست شما منقضی شده است.' });
+    if (result.denied) return reply(res,403,{...result.subscription,message:'حجم یا مهلت اشتراک تمام شده است.'});
+    if (result.subscription) return reply(res,200,{...result.subscription,success:true,applied:result.applied});
     return reply(res, 200, { success: true, applied: result.applied });
   }
 
