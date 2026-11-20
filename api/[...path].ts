@@ -172,7 +172,8 @@ return async function handler(req: any, res: any) {
 
     if (pathname === '/api/subscriptions' && method === 'GET') {
       const plans = await database.query(`SELECT p.id,p.name,p.description,p.price_irr AS "priceIrr",p.quota_bytes AS "quotaBytes",
-        p.duration_days AS "durationDays",p.simultaneous_devices AS "simultaneousDevices",p.features,p.active,COUNT(u.id)::int AS users
+        p.duration_days AS "durationDays",p.simultaneous_devices AS "simultaneousDevices",p.features,p.active,
+        COUNT(u.id) FILTER (WHERE u.subscription_expires_at>NOW() AND u.subscription_used_bytes<u.subscription_quota_bytes)::int AS users
         FROM subscription_plans p LEFT JOIN users u ON u.plan=p.name GROUP BY p.id ORDER BY p.id`);
       return reply(res, 200, plans.rows);
     }
