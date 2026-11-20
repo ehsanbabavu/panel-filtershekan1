@@ -6,5 +6,5 @@
     "noUnusedLocals": false, "noUnusedParameters": false, "noFallthroughCasesInSwitch": true,
     "types": ["vite/client", "node"]
   },
-  "include": ["client", "server", "vite.config.ts"]
+  "include": ["client", "server", "api", "tests", "vite.config.ts"]
 }

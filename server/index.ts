@@ -1,85 +1,16 @@
 import express from 'express';
 import bcrypt from 'bcryptjs';
-import pg from 'pg';
+import { initializeDatabase, pool } from './database.js';
+import { createMobileHandler } from './mobile.js';
+import { selectUsers } from './presence.js';
 
-const { Pool } = pg;
 const app = express();
 const port = Number(process.env.PORT || 3001);
-const adminName = process.env.ADMIN_USERNAME || 'ehsan';
-const adminPassword = process.env.ADMIN_PASSWORD || '232111Eee@';
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL || process.env.POSTGRES_URL,
-  ssl: process.env.DATABASE_SSL === 'true' ? { rejectUnauthorized: false } : undefined,
-});
-
-let initialization: Promise<void> | undefined;
-
-export function initializeDatabase() {
-  if (!initialization) initialization = initializeDatabaseOnce().catch((error) => {
-    initialization = undefined;
-    throw error;
-  });
-  return initialization;
-}
-
-async function initializeDatabaseOnce() {
-  if (!process.env.DATABASE_URL && !process.env.POSTGRES_URL) {
-    throw new Error('DATABASE_URL یا POSTGRES_URL تنظیم نشده است.');
-  }
-
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS admins (
-      username TEXT PRIMARY KEY,
-      password_hash TEXT NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-    CREATE TABLE IF NOT EXISTS sessions (
-      token TEXT PRIMARY KEY,
-      admin_username TEXT NOT NULL REFERENCES admins(username) ON DELETE CASCADE,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      expires_at TIMESTAMPTZ NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS users (
-      id BIGSERIAL PRIMARY KEY,
-      name TEXT NOT NULL,
-      username TEXT NOT NULL UNIQUE,
-      status TEXT NOT NULL CHECK (status IN ('آنلاین', 'آفلاین')),
-      plan TEXT NOT NULL,
-      last_seen TEXT NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-    CREATE TABLE IF NOT EXISTS chat_messages (
-      id BIGSERIAL PRIMARY KEY,
-      author TEXT NOT NULL,
-      message TEXT NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-    CREATE INDEX IF NOT EXISTS chat_messages_created_at_idx ON chat_messages(created_at);
-  `);
-
-  const adminHash = await bcrypt.hash(adminPassword, 10);
-  await pool.query(
-    `INSERT INTO admins (username, password_hash) VALUES ($1, $2)
-     ON CONFLICT (username) DO NOTHING`,
-    [adminName, adminHash],
-  );
-
-  const usersCount = await pool.query<{ count: string }>('SELECT COUNT(*)::text AS count FROM users');
-  if (usersCount.rows[0]?.count === '0') {
-    await pool.query(`
-      INSERT INTO users (name, username, status, plan, last_seen) VALUES
-       ('آرمان رضایی', 'arman.r', 'آنلاین', 'حرفه‌ای', 'هم‌اکنون'),
-       ('سارا محمدی', 'sara.m', 'آنلاین', 'پایه', 'هم‌اکنون'),
-       ('نیما کریمی', 'nima.k', 'آفلاین', 'حرفه‌ای', '۲ ساعت پیش'),
-       ('نگار احمدی', 'negar.a', 'آنلاین', 'آزمایشی', 'هم‌اکنون'),
-       ('پارسا حیدری', 'parsa.h', 'آفلاین', 'پایه', 'دیروز'),
-       ('یلدا موسوی', 'yalda.m', 'آنلاین', 'حرفه‌ای', 'هم‌اکنون')
-       ON CONFLICT (username) DO NOTHING
-    `);
-  }
-}
+export { initializeDatabase } from './database.js';
 
 app.use(express.json());
+app.all(['/api/mobile', '/api/mobile/:action'], createMobileHandler(pool, initializeDatabase));
+app.use('/api', (_req, res, next) => { res.setHeader('Cache-Control', 'no-store'); next(); });
 
 app.get('/api/health', async (_req, res) => {
   try {
@@ -129,9 +60,7 @@ app.use('/api', async (req, res, next) => {
 
 app.get('/api/users', async (_req, res, next) => {
   try {
-    const result = await pool.query(
-      `SELECT id, name, username, status, plan, last_seen AS "lastSeen" FROM users ORDER BY id`,
-    );
+    const result = await selectUsers(pool);
     res.json(result.rows);
   } catch (error) { next(error); }
 });
