@@ -48,14 +48,6 @@ return async function handler(req: any, res: any) {
       return reply(res, 200, { token, username });
     }
 
-    if (pathname === '/api/subscriptions' && method === 'GET') {
-      return reply(res, 200, [
-        { name: 'حرفه‌ای', users: 128, price: '۲۹۹٬۰۰۰', color: 'violet', change: '+۱۲٪' },
-        { name: 'پایه', users: 86, price: '۱۴۹٬۰۰۰', color: 'blue', change: '+۸٪' },
-        { name: 'آزمایشی', users: 34, price: 'رایگان', color: 'amber', change: '+۳٪' },
-      ]);
-    }
-
     const token = String(req.headers?.authorization || '').replace(/^Bearer\s+/i, '');
     if (!token) return reply(res, 401, { message: 'برای ادامه وارد شوید.' });
     const session = await database.query(
@@ -63,6 +55,52 @@ return async function handler(req: any, res: any) {
       [token],
     );
     if (!session.rowCount) return reply(res, 401, { message: 'نشست شما منقضی شده است؛ دوباره وارد شوید.' });
+
+    if (pathname === '/api/subscriptions' && method === 'GET') {
+      const plans = await database.query(`SELECT p.id,p.name,p.description,p.price_irr AS "priceIrr",p.quota_bytes AS "quotaBytes",
+        p.duration_days AS "durationDays",p.simultaneous_devices AS "simultaneousDevices",p.features,p.active,COUNT(u.id)::int AS users
+        FROM subscription_plans p LEFT JOIN users u ON u.plan=p.name GROUP BY p.id ORDER BY p.id`);
+      return reply(res, 200, plans.rows);
+    }
+
+    if (pathname === '/api/subscriptions' && (method === 'POST' || method === 'PATCH')) {
+      const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
+      const name = typeof body.name === 'string' ? body.name.trim() : '';
+      const description = typeof body.description === 'string' ? body.description.trim() : '';
+      const priceIrr = Number(body.priceIrr);
+      const quotaBytes = Number(body.quotaBytes);
+      const durationDays = Number(body.durationDays);
+      const simultaneousDevices = Number(body.simultaneousDevices ?? 1);
+      const features = body.features ?? [];
+      if (name.length < 2 || name.length > 80 || !Number.isSafeInteger(priceIrr) || priceIrr < 0 ||
+          !Number.isSafeInteger(quotaBytes) || quotaBytes < 1 || !Number.isInteger(durationDays) || durationDays < 1 ||
+          !Number.isInteger(simultaneousDevices) || simultaneousDevices < 1 || !Array.isArray(features) ||
+          features.some((feature: unknown) => typeof feature !== 'string')) {
+        return reply(res, 400, { message: 'مشخصات اشتراک معتبر نیست.' });
+      }
+      try {
+        if (method === 'POST') {
+          const created = await database.query(`INSERT INTO subscription_plans(name,description,price_irr,quota_bytes,duration_days,simultaneous_devices,features,active)
+            VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id,name,description,price_irr AS "priceIrr",quota_bytes AS "quotaBytes",
+            duration_days AS "durationDays",simultaneous_devices AS "simultaneousDevices",features,active`,
+          [name, description, priceIrr, quotaBytes, durationDays, simultaneousDevices, JSON.stringify(features), body.active !== false]);
+          return reply(res, 201, created.rows[0]);
+        }
+        const query = new URL(req.url || '/', 'http://localhost').searchParams;
+        const id = Number(query.get('id') || body.id);
+        if (!Number.isSafeInteger(id) || id < 1) return reply(res, 400, { message: 'شناسه اشتراک معتبر نیست.' });
+        const updated = await database.query(`UPDATE subscription_plans SET name=$2,description=$3,price_irr=$4,quota_bytes=$5,
+          duration_days=$6,simultaneous_devices=$7,features=$8,active=$9,updated_at=NOW() WHERE id=$1
+          RETURNING id,name,description,price_irr AS "priceIrr",quota_bytes AS "quotaBytes",duration_days AS "durationDays",
+          simultaneous_devices AS "simultaneousDevices",features,active`,
+        [id, name, description, priceIrr, quotaBytes, durationDays, simultaneousDevices, JSON.stringify(features), body.active !== false]);
+        if (!updated.rows[0]) return reply(res, 404, { message: 'اشتراک پیدا نشد.' });
+        return reply(res, 200, updated.rows[0]);
+      } catch (error: any) {
+        if (error?.code === '23505') return reply(res, 409, { message: 'نام این اشتراک از قبل وجود دارد.' });
+        throw error;
+      }
+    }
 
     if (pathname === '/api/users' && method === 'GET') {
       const users = await selectUsers(database);
