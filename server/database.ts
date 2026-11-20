@@ -43,6 +43,14 @@ export async function initializeSchema(database: Pick<Pool, 'query'>) {
       id INTEGER PRIMARY KEY CHECK (id = 1), host TEXT NOT NULL, port INTEGER NOT NULL CHECK (port BETWEEN 1 AND 65535),
       username TEXT NOT NULL DEFAULT '', password TEXT NOT NULL DEFAULT '', updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+    CREATE TABLE IF NOT EXISTS bluepal_settings (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      api_key TEXT NOT NULL DEFAULT '',
+      merchant_id TEXT NOT NULL DEFAULT '',
+      base_url TEXT NOT NULL DEFAULT 'https://www.bluepal.ir',
+      enabled BOOLEAN NOT NULL DEFAULT FALSE,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
     CREATE TABLE IF NOT EXISTS proxy_servers (
       id BIGSERIAL PRIMARY KEY, name TEXT NOT NULL, host TEXT NOT NULL,
       port INTEGER NOT NULL CHECK (port BETWEEN 1 AND 65535), username TEXT NOT NULL DEFAULT '', password TEXT NOT NULL DEFAULT '',

@@ -2,6 +2,7 @@ import bcrypt from 'bcryptjs';
 import { initializeDatabase, pool } from '../server/database.js';
 import { handleMobileRequest } from '../server/mobile.js';
 import { selectUsers, type MobileDatabase } from '../server/presence.js';
+import { handleBluePalAdminRequest } from '../server/bluepal.js';
 
 function reply(res: any, status: number, data: unknown) {
   res.status(status).json(data);
@@ -55,6 +56,9 @@ return async function handler(req: any, res: any) {
       [token],
     );
     if (!session.rowCount) return reply(res, 401, { message: 'نشست شما منقضی شده است؛ دوباره وارد شوید.' });
+
+    const bluePalHandled = await handleBluePalAdminRequest(pathname, method, req, res, database);
+    if (bluePalHandled !== null) return bluePalHandled;
 
     if (pathname === '/api/proxy' && method === 'GET') {
       const result = await database.query('SELECT host,port,username,password,updated_at AS "updatedAt" FROM proxy_settings WHERE id=1');

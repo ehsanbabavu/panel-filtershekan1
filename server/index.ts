@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs';
 import { initializeDatabase, pool } from './database.js';
 import { createMobileHandler } from './mobile.js';
 import { selectUsers } from './presence.js';
+import { handleBluePalAdminRequest } from './bluepal.js';
 
 const app = express();
 const port = Number(process.env.PORT || 3001);
@@ -55,6 +56,13 @@ app.use('/api', async (req, res, next) => {
     );
     if (!result.rowCount) return res.status(401).json({ message: 'نشست شما منقضی شده است؛ دوباره وارد شوید.' });
     next();
+  } catch (error) { next(error); }
+});
+
+app.all('/api/payment/bluepal/:action', async (req, res, next) => {
+  try {
+    const handled = await handleBluePalAdminRequest(req.path, req.method, req, res, pool);
+    if (handled === null) return next();
   } catch (error) { next(error); }
 });
 
