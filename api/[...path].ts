@@ -57,13 +57,43 @@ return async function handler(req: any, res: any) {
     if (!session.rowCount) return reply(res, 401, { message: 'نشست شما منقضی شده است؛ دوباره وارد شوید.' });
 
     if (pathname === '/api/user-subscriptions' && method === 'GET') {
-      const subscriptions = await database.query(`SELECT u.id AS "userId",u.name AS "userName",u.username,p.name AS "planName",
+      const subscriptions = await database.query(`SELECT u.id AS "userId",u.name AS "userName",u.username,p.id AS "planId",p.name AS "planName",p.duration_days AS "durationDays",
         u.subscription_started_at AS "startedAt",u.subscription_expires_at AS "expiresAt",
         u.subscription_quota_bytes AS "quotaBytes",u.subscription_used_bytes AS "usedBytes",u.blocked,
         (u.subscription_expires_at>NOW() AND u.subscription_used_bytes<u.subscription_quota_bytes) AS active
         FROM users u LEFT JOIN subscription_plans p ON p.name=u.plan
         WHERE u.subscription_started_at IS NOT NULL ORDER BY u.subscription_started_at DESC`);
       return reply(res, 200, subscriptions.rows);
+    }
+
+    if (pathname === '/api/user-subscriptions' && method === 'PATCH') {
+      const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
+      const userId = Number(body.userId), planId = Number(body.planId), durationDays = Number(body.durationDays), quotaBytes = Number(body.quotaBytes);
+      if (!Number.isSafeInteger(userId) || userId < 1 || !Number.isSafeInteger(planId) || planId < 1 ||
+          !Number.isInteger(durationDays) || durationDays < 1 || durationDays > 3650 || !Number.isSafeInteger(quotaBytes) || quotaBytes < 1) {
+        return reply(res, 400, { message: 'مشخصات اشتراک معتبر نیست.' });
+      }
+      const client = await database.connect();
+      try {
+        await client.query('BEGIN');
+        const plan = (await client.query<any>('SELECT * FROM subscription_plans WHERE id=$1 AND active=true', [planId])).rows[0];
+        if (!plan) { await client.query('ROLLBACK'); return reply(res, 404, { message: 'پلن فعال پیدا نشد.' }); }
+        const user = (await client.query<any>('SELECT id FROM users WHERE id=$1 FOR UPDATE', [userId])).rows[0];
+        if (!user) { await client.query('ROLLBACK'); return reply(res, 404, { message: 'کاربر پیدا نشد.' }); }
+        const startedAt = new Date();
+        const expiresAt = new Date(startedAt.getTime() + durationDays * 86400000);
+        await client.query("UPDATE user_subscriptions SET status='cancelled' WHERE user_id=$1 AND status='active'", [userId]);
+        const subscription = (await client.query<any>(`INSERT INTO user_subscriptions(user_id,plan_id,started_at,expires_at,quota_bytes,used_bytes,status)
+          VALUES($1,$2,$3,$4,$5,0,'active') RETURNING id,user_id AS "userId",plan_id AS "planId",started_at AS "startedAt",expires_at AS "expiresAt",quota_bytes AS "quotaBytes",used_bytes AS "usedBytes",status`,
+        [userId, planId, startedAt, expiresAt, quotaBytes])).rows[0];
+        await client.query(`UPDATE users SET plan=$2,subscription_started_at=$3,subscription_expires_at=$4,
+          subscription_quota_bytes=$5,subscription_used_bytes=0 WHERE id=$1`, [userId, plan.name, startedAt, expiresAt, quotaBytes]);
+        await client.query('COMMIT');
+        return reply(res, 200, { ...subscription, planName: plan.name, durationDays });
+      } catch (error) {
+        await client.query('ROLLBACK').catch(() => undefined);
+        throw error;
+      } finally { client.release(); }
     }
 
     if (pathname === '/api/users/block' && method === 'POST') {
@@ -83,6 +113,16 @@ return async function handler(req: any, res: any) {
         p.duration_days AS "durationDays",p.simultaneous_devices AS "simultaneousDevices",p.features,p.active,COUNT(u.id)::int AS users
         FROM subscription_plans p LEFT JOIN users u ON u.plan=p.name GROUP BY p.id ORDER BY p.id`);
       return reply(res, 200, plans.rows);
+    }
+
+    if (pathname === '/api/subscriptions' && method === 'DELETE') {
+      const id = Number(new URL(req.url || '/', 'http://localhost').searchParams.get('id'));
+      if (!Number.isSafeInteger(id) || id < 1) return reply(res, 400, { message: 'شناسه پلن معتبر نیست.' });
+      const assigned = await database.query<any>('SELECT COUNT(*)::int AS count FROM user_subscriptions WHERE plan_id=$1', [id]);
+      if (Number(assigned.rows[0]?.count) > 0) return reply(res, 409, { message: 'این پلن در سابقه اشتراک کاربران استفاده شده و قابل حذف نیست.' });
+      const deleted = await database.query('DELETE FROM subscription_plans WHERE id=$1 RETURNING id', [id]);
+      if (!deleted.rows[0]) return reply(res, 404, { message: 'پلن پیدا نشد.' });
+      return reply(res, 200, { success: true, id: deleted.rows[0].id });
     }
 
     if (pathname === '/api/subscriptions' && (method === 'POST' || method === 'PATCH')) {

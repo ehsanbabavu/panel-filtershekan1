@@ -72,8 +72,16 @@ app.get('/api/subscriptions', async (_req, res, next) => {
   catch(error){next(error);}
 });
 
+app.delete('/api/subscriptions',async(req,res,next)=>{try{
+  const id=Number(req.query.id);if(!Number.isSafeInteger(id)||id<1)return res.status(400).json({message:'شناسه پلن معتبر نیست.'});
+  const assigned=await pool.query<any>('SELECT COUNT(*)::int AS count FROM user_subscriptions WHERE plan_id=$1',[id]);
+  if(Number(assigned.rows[0]?.count)>0)return res.status(409).json({message:'این پلن در سابقه اشتراک کاربران استفاده شده و قابل حذف نیست.'});
+  const result=await pool.query('DELETE FROM subscription_plans WHERE id=$1 RETURNING id',[id]);
+  if(!result.rows[0])return res.status(404).json({message:'پلن پیدا نشد.'});res.json({success:true,id:result.rows[0].id});
+}catch(error){next(error);}});
+
 app.get('/api/user-subscriptions', async (_req,res,next)=>{try{
-  const result=await pool.query(`SELECT u.id AS "userId",u.name AS "userName",u.username,p.name AS "planName",
+  const result=await pool.query(`SELECT u.id AS "userId",u.name AS "userName",u.username,p.id AS "planId",p.name AS "planName",p.duration_days AS "durationDays",
     u.subscription_started_at AS "startedAt",u.subscription_expires_at AS "expiresAt",
     u.subscription_quota_bytes AS "quotaBytes",u.subscription_used_bytes AS "usedBytes",u.blocked,
     (u.subscription_expires_at>NOW() AND u.subscription_used_bytes<u.subscription_quota_bytes) AS active
@@ -81,6 +89,19 @@ app.get('/api/user-subscriptions', async (_req,res,next)=>{try{
     WHERE u.subscription_started_at IS NOT NULL ORDER BY u.subscription_started_at DESC`);
   res.json(result.rows);
 }catch(error){next(error);}});
+
+app.patch('/api/user-subscriptions',async(req,res,next)=>{const db=await pool.connect();try{
+  const userId=Number(req.body?.userId),planId=Number(req.body?.planId),days=Number(req.body?.durationDays),quota=Number(req.body?.quotaBytes);
+  if(!Number.isSafeInteger(userId)||userId<1||!Number.isSafeInteger(planId)||planId<1||!Number.isInteger(days)||days<1||days>3650||!Number.isSafeInteger(quota)||quota<1)return res.status(400).json({message:'مشخصات اشتراک معتبر نیست.'});
+  await db.query('BEGIN');const plan=(await db.query<any>('SELECT * FROM subscription_plans WHERE id=$1 AND active=true',[planId])).rows[0];if(!plan){await db.query('ROLLBACK');return res.status(404).json({message:'پلن فعال پیدا نشد.'});}
+  const user=(await db.query<any>('SELECT id FROM users WHERE id=$1 FOR UPDATE',[userId])).rows[0];if(!user){await db.query('ROLLBACK');return res.status(404).json({message:'کاربر پیدا نشد.'});}
+  const start=new Date(),expires=new Date(start.getTime()+days*86400000);
+  await db.query("UPDATE user_subscriptions SET status='cancelled' WHERE user_id=$1 AND status='active'",[userId]);
+  const sub=(await db.query<any>(`INSERT INTO user_subscriptions(user_id,plan_id,started_at,expires_at,quota_bytes,used_bytes,status) VALUES($1,$2,$3,$4,$5,0,'active')
+    RETURNING id,user_id AS "userId",plan_id AS "planId",started_at AS "startedAt",expires_at AS "expiresAt",quota_bytes AS "quotaBytes",used_bytes AS "usedBytes",status`,[userId,planId,start,expires,quota])).rows[0];
+  await db.query('UPDATE users SET plan=$2,subscription_started_at=$3,subscription_expires_at=$4,subscription_quota_bytes=$5,subscription_used_bytes=0 WHERE id=$1',[userId,plan.name,start,expires,quota]);
+  await db.query('COMMIT');res.json({...sub,planName:plan.name,durationDays:days});
+}catch(error){await db.query('ROLLBACK').catch(()=>undefined);next(error);}finally{db.release();}});
 
 app.post('/api/users/block',async(req,res,next)=>{try{
   const id=Number(req.body?.userId),blocked=req.body?.blocked;
