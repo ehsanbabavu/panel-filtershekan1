@@ -164,6 +164,8 @@ export async function handleMobileRequest(action: string, req: any, res: any, da
     const planId = Number(bodyOf(req).planId);
     if (!Number.isSafeInteger(planId) || planId < 1) return reply(res, 400, { message: 'پلن انتخاب‌شده معتبر نیست.' });
     const client = await database.connect();
+    let paymentId = '';
+    let providerInvoiceReceived = false;
     try {
       await client.query('BEGIN');
       const session = await client.query<any>(`SELECT u.id FROM app_user_sessions s JOIN users u ON u.id=s.user_id
@@ -178,24 +180,40 @@ export async function handleMobileRequest(action: string, req: any, res: any, da
       const previous = await client.query<any>(`SELECT * FROM bluepal_payments WHERE user_id=$1 AND status='pending'
         AND created_at>NOW()-INTERVAL '30 minutes' ORDER BY created_at DESC LIMIT 1 FOR UPDATE`, [userId]);
       if (previous.rows[0]) {
-        await client.query('COMMIT');
-        if (previous.rows[0].track_id && previous.rows[0].payment_url) return reply(res, 200, paymentRow(previous.rows[0]));
-        return reply(res, 409, { message: 'صدور فاکتور قبلی در حال بررسی است؛ برای جلوگیری از فاکتور تکراری بعداً دوباره وضعیت را بررسی کنید.', invoiceOutcomeUnknown: true });
+        if (previous.rows[0].track_id && previous.rows[0].payment_url) {
+          await client.query('COMMIT');
+          return reply(res, 200, paymentRow(previous.rows[0]));
+        }
+        if (previous.rows[0].track_id || previous.rows[0].payment_url) {
+          await client.query('COMMIT');
+          return reply(res, 409, { message: 'اطلاعات فاکتور قبلی ناقص است؛ برای جلوگیری از صدور فاکتور تکراری، پشتیبانی را مطلع کنید.', invoiceOutcomeUnknown: true });
+        }
+        // A pending row without a provider invoice ID/link can never be resumed by the app.
+        // Retire it so a failed invoice request does not block all future purchases.
+        await client.query("UPDATE bluepal_payments SET status='failed',updated_at=NOW() WHERE public_id=$1 AND status='pending'", [previous.rows[0].public_id]);
       }
       const publicId = crypto.randomUUID();
+      paymentId = publicId;
       const inserted = await client.query<any>(`INSERT INTO bluepal_payments(public_id,user_id,plan_id,plan_name,quota_bytes,duration_days,amount_toman,amount_rial)
         VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`, [publicId,userId,planId,selected.name,selected.quota_bytes,selected.duration_days,amount,amount*10]);
       await client.query('COMMIT');
       const payment = inserted.rows[0];
       if (amount === 0) return reply(res,201,{ ...(await activatePaidPayment(database,publicId,'FREE')).payment,free:true });
       const config = await readBluePalConfig(database);
-      if (!config) return reply(res,503,{message:'تنظیمات درگاه بلوپال در دسترس نیست.'});
+      if (!config) {
+        await database.query("UPDATE bluepal_payments SET status='failed',updated_at=NOW() WHERE public_id=$1 AND status='pending'", [publicId]);
+        return reply(res,503,{message:'تنظیمات درگاه بلوپال در دسترس نیست.'});
+      }
       const callbackUrl = `${appOrigin(req)}/api/mobile?action=payment-return&paymentId=${encodeURIComponent(publicId)}`;
       const invoice = await requestBluePalPayment(config,{amount,callbackUrl,description:`خرید پلن ${selected.name} فیلترشکن`});
+      providerInvoiceReceived = true;
       const updated = await database.query<any>('UPDATE bluepal_payments SET track_id=$2,payment_url=$3,amount_rial=$4,expires_at=$5,updated_at=NOW() WHERE public_id=$1 RETURNING *',[publicId,invoice.trackId,invoice.paymentUrl,invoice.amountRial,invoice.expiresAt ? new Date(invoice.expiresAt) : null]);
       return reply(res,201,paymentRow(updated.rows[0]));
     } catch (error: any) {
       await client.query('ROLLBACK').catch(() => undefined);
+      if (paymentId && !providerInvoiceReceived) {
+        await database.query("UPDATE bluepal_payments SET status='failed',updated_at=NOW() WHERE public_id=$1 AND status='pending' AND track_id IS NULL AND payment_url IS NULL", [paymentId]).catch(() => undefined);
+      }
       console.error('BluePal invoice creation failed:',error);
       return reply(res,502,{message:String(error?.message || 'صدور فاکتور بلوپال انجام نشد. اگر درخواست به درگاه رسیده، پیش از تلاش دوباره پنل را بررسی کنید.'),invoiceOutcomeUnknown:true});
     } finally { client.release(); }
