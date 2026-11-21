@@ -24,7 +24,7 @@ function appOrigin(req: any) {
 }
 
 function paymentRow(row: any) {
-  return { paymentId: row.public_id, status: row.status, planName: row.plan_name, amountToman: Number(row.amount_toman), amountRial: Number(row.amount_rial || 0), paymentUrl: row.payment_url || null, trackId: row.track_id || null, reference: row.reference || null, expiresAt: row.expires_at || null, cardNumber: row.card_number || '', accountHolder: row.account_holder || '' };
+  return { paymentId: row.public_id, status: row.status, planName: row.plan_name, amountToman: Number(row.amount_toman), amountRial: Number(row.amount_rial || 0), quotaBytes: Number(row.quota_bytes || 0), durationDays: Number(row.duration_days || 0), paymentUrl: row.payment_url || null, trackId: row.track_id || null, reference: row.reference || null, expiresAt: row.expires_at || null, cardNumber: row.card_number || '', accountHolder: row.account_holder || '' };
 }
 
 async function activatePaidPayment(database: MobileDatabase, paymentId: string, reference: string) {
