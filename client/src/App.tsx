@@ -13,10 +13,14 @@ const sectionPaths: Record<string, string> = { dashboard: '/dashboard', users: '
 const pathSections = Object.fromEntries(Object.entries(sectionPaths).map(([section, path]) => [path, section])) as Record<string, string>;
 function sectionFromPath(pathname: string) { return pathSections[pathname.replace(/\/$/, '')] || 'dashboard'; }
 
+class ApiError extends Error {
+  constructor(public status: number, message = 'دریافت اطلاعات با خطا مواجه شد.') { super(message); }
+}
+
 async function api<T>(url: string, token: string, signal?: AbortSignal): Promise<T> {
   const response = await fetch(url, { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store', signal });
   const result = await readApiResponse<T>(response);
-  if (!response.ok) throw new Error((result as any)?.message || `خطای سرور (HTTP ${response.status})`);
+  if (!response.ok) throw new ApiError(response.status, (result as any)?.message || `خطای سرور (HTTP ${response.status})`);
   return result;
 }
 
