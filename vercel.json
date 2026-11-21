@@ -4,6 +4,7 @@
     { "source": "/users", "destination": "/" },
     { "source": "/plans", "destination": "/" },
     { "source": "/subscriptions", "destination": "/" },
+    { "source": "/transactions", "destination": "/" },
     { "source": "/socks", "destination": "/" },
     { "source": "/chat", "destination": "/" },
     { "source": "/payment-gateway", "destination": "/" }

@@ -81,6 +81,14 @@ return async function handler(req: any, res: any) {
     const bluePalHandled = await handleBluePalAdminRequest(pathname, method, req, res, database);
     if (bluePalHandled !== null) return bluePalHandled;
 
+    if (pathname === '/api/transactions' && method === 'GET') {
+      const result = await database.query(`SELECT p.id,p.public_id AS "paymentId",u.name AS "userName",u.username,
+        p.plan_name AS "planName",p.amount_toman AS "amountToman",p.status,p.track_id AS "trackId",p.reference,
+        p.payment_url AS "paymentUrl",p.created_at AS "createdAt",p.paid_at AS "paidAt"
+        FROM bluepal_payments p JOIN users u ON u.id=p.user_id ORDER BY p.created_at DESC LIMIT 500`);
+      return reply(res, 200, result.rows);
+    }
+
     if (pathname === '/api/proxy' && method === 'GET') {
       const result = await database.query('SELECT host,port,username,password,updated_at AS "updatedAt" FROM proxy_settings WHERE id=1');
       return reply(res, 200, result.rows[0] || null);

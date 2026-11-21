@@ -99,6 +99,16 @@ app.all('/api/payment/bluepal/:action', async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
+app.get('/api/transactions', async (_req, res, next) => {
+  try {
+    const result = await pool.query(`SELECT p.id,p.public_id AS "paymentId",u.name AS "userName",u.username,
+      p.plan_name AS "planName",p.amount_toman AS "amountToman",p.status,p.track_id AS "trackId",p.reference,
+      p.payment_url AS "paymentUrl",p.created_at AS "createdAt",p.paid_at AS "paidAt"
+      FROM bluepal_payments p JOIN users u ON u.id=p.user_id ORDER BY p.created_at DESC LIMIT 500`);
+    res.json(result.rows);
+  } catch (error) { next(error); }
+});
+
 app.get('/api/users', async (_req, res, next) => {
   try {
     const result = await selectUsers(pool);
