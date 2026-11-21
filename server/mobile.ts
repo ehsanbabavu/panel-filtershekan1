@@ -139,6 +139,7 @@ export async function handleMobileRequest(action: string, req: any, res: any, da
         const user = created.rows[0];
         const trial = await client.query<any>('SELECT id,name,quota_bytes,duration_days FROM subscription_plans WHERE is_trial=TRUE AND active=TRUE ORDER BY id LIMIT 1 FOR SHARE');
         let trialGranted = false;
+        let trialExpiresAt: Date | string | null = null;
         if (deviceHash && trial.rows[0]) {
           const claim = await client.query<any>(`INSERT INTO trial_device_claims(device_hash,user_id)
             VALUES($1,$2) ON CONFLICT(device_hash) DO NOTHING RETURNING device_hash`, [deviceHash, user.id]);
@@ -148,6 +149,7 @@ export async function handleMobileRequest(action: string, req: any, res: any, da
               subscription_expires_at=NOW()+($2::int*INTERVAL '1 day'),subscription_quota_bytes=$3,subscription_used_bytes=0
               WHERE id=$1 RETURNING subscription_started_at,subscription_expires_at,subscription_quota_bytes`,
             [user.id, trial.rows[0].duration_days, trial.rows[0].quota_bytes, trial.rows[0].name]);
+            trialExpiresAt = sub.rows[0].subscription_expires_at;
             await client.query(`INSERT INTO user_subscriptions(user_id,plan_id,started_at,expires_at,quota_bytes,used_bytes,status)
               VALUES($1,$2,$3,$4,$5,0,'active')`, [user.id, trial.rows[0].id, sub.rows[0].subscription_started_at,
               sub.rows[0].subscription_expires_at, sub.rows[0].subscription_quota_bytes]);
@@ -155,6 +157,13 @@ export async function handleMobileRequest(action: string, req: any, res: any, da
         }
         await client.query(`INSERT INTO chat_messages(user_id,sender_role,author,message,read_by_admin)
           VALUES($1,'admin','پشتیبانی','سلام، به فیلترشکن آریا خوش آمدید! حساب شما با موفقیت ساخته شد. اگر در اتصال یا استفاده از سرویس به راهنمایی نیاز داشتید، همین‌جا برای ما پیام بگذارید.',TRUE)`, [user.id]);
+        if (trialGranted && trial.rows[0] && trialExpiresAt) {
+          const quotaMegabytes = new Intl.NumberFormat('fa-IR', { maximumFractionDigits: 2 }).format(Number(trial.rows[0].quota_bytes) / 1048576);
+          const expiryLabel = new Intl.DateTimeFormat('fa-IR', { dateStyle: 'long', timeZone: 'Asia/Tehran' }).format(new Date(trialExpiresAt));
+          const giftMessage = `🎁 مشخصات اشتراک هدیه شما:\nپلن: ${trial.rows[0].name}\nحجم کل: ${quotaMegabytes} مگابایت\nمدت استفاده: ${Number(trial.rows[0].duration_days).toLocaleString('fa-IR')} روز\nمهلت استفاده تا: ${expiryLabel}\nاشتراک شما از همین حالا فعال است.`;
+          await client.query(`INSERT INTO chat_messages(user_id,sender_role,author,message,read_by_admin)
+            VALUES($1,'admin','پشتیبانی',$2,TRUE)`, [user.id, giftMessage]);
+        }
         const token = crypto.randomUUID();
         await client.query('INSERT INTO app_user_sessions (token,user_id,device_id) VALUES ($1,$2,$3)', [token, user.id, deviceHash]);
         const refreshed = await client.query<any>(`SELECT id,name,username,plan,created_at AS "createdAt",
