@@ -107,7 +107,7 @@ function paymentReturnPage(paid: boolean, paymentId = '') {
 
 export async function handleMobileRequest(action: string, req: any, res: any, database: MobileDatabase) {
   const method = String(req.method || 'GET').toUpperCase();
-  if (!['register', 'login', 'me', 'logout', 'presence', 'usage', 'proxy', 'chat', 'plans', 'payment-create', 'payment-status', 'payment-page', 'payment-page-status', 'payment-return'].includes(action)) {
+  if (!['register', 'login', 'me', 'logout', 'devices', 'device-logout', 'presence', 'usage', 'proxy', 'chat', 'plans', 'payment-create', 'payment-status', 'payment-page', 'payment-page-status', 'payment-return'].includes(action)) {
     return reply(res, 404, { message: 'مسیر پیدا نشد.' });
   }
 
@@ -374,6 +374,45 @@ export async function handleMobileRequest(action: string, req: any, res: any, da
     );
     if (!result.rows[0]) return reply(res, 401, { message: 'نشست شما منقضی شده است.' });
     return reply(res, 200, result.rows[0]);
+  }
+
+  if (action === 'devices' && method === 'GET') {
+    if (!token) return reply(res, 401, { message: 'برای مشاهده دستگاه‌ها وارد حساب شوید.' });
+    const current = await database.query<any>(`SELECT user_id FROM app_user_sessions
+      WHERE token=$1 AND (expires_at IS NULL OR expires_at>NOW())`, [token]);
+    if (!current.rows[0]) return reply(res, 401, { message: 'نشست شما منقضی شده است.' });
+    const sessions = await database.query<any>(`SELECT token,device_id,created_at,vpn_connected,vpn_heartbeat_at
+      FROM app_user_sessions WHERE user_id=$1 AND (expires_at IS NULL OR expires_at>NOW())
+      ORDER BY created_at DESC`, [current.rows[0].user_id]);
+    const devices = new Map<string, any>();
+    for (const session of sessions.rows) {
+      const deviceId = session.device_id || createHash('sha256').update(`legacy:${session.token}`).digest('hex');
+      const active = Boolean(session.vpn_connected && session.vpn_heartbeat_at && Date.now() - new Date(session.vpn_heartbeat_at).getTime() < 90_000);
+      const item = devices.get(deviceId) || { deviceId, current: false, connected: false, sessionCount: 0, lastLoginAt: session.created_at };
+      item.current ||= session.token === token;
+      item.connected ||= active;
+      item.sessionCount += 1;
+      if (new Date(session.created_at).getTime() > new Date(item.lastLoginAt).getTime()) item.lastLoginAt = session.created_at;
+      devices.set(deviceId, item);
+    }
+    return reply(res, 200, [...devices.values()]);
+  }
+
+  if (action === 'device-logout' && method === 'POST') {
+    if (!token) return reply(res, 401, { message: 'برای خروج دستگاه وارد حساب شوید.' });
+    const deviceId = String(bodyOf(req).deviceId || '');
+    if (!/^[a-f0-9]{64}$/i.test(deviceId)) return reply(res, 400, { message: 'شناسه دستگاه معتبر نیست.' });
+    const current = await database.query<any>(`SELECT user_id FROM app_user_sessions
+      WHERE token=$1 AND (expires_at IS NULL OR expires_at>NOW())`, [token]);
+    if (!current.rows[0]) return reply(res, 401, { message: 'نشست شما منقضی شده است.' });
+    const sessions = await database.query<any>('SELECT token,device_id FROM app_user_sessions WHERE user_id=$1', [current.rows[0].user_id]);
+    const tokens = sessions.rows.filter((session: any) => {
+      const key = session.device_id || createHash('sha256').update(`legacy:${session.token}`).digest('hex');
+      return key === deviceId;
+    }).map((session: any) => session.token);
+    if (!tokens.length) return reply(res, 404, { message: 'این دستگاه در نشست‌های فعال پیدا نشد.' });
+    await database.query('DELETE FROM app_user_sessions WHERE user_id=$1 AND token=ANY($2::text[])', [current.rows[0].user_id, tokens]);
+    return reply(res, 200, { success: true, revokedCurrent: tokens.includes(token), revokedSessions: tokens.length });
   }
 
   if (action === 'logout' && method === 'POST') {
