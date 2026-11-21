@@ -145,8 +145,10 @@ app.get('/api/subscriptions', async (_req, res, next) => {
 
 app.delete('/api/subscriptions',async(req,res,next)=>{try{
   const id=Number(req.query.id);if(!Number.isSafeInteger(id)||id<1)return res.status(400).json({message:'شناسه پلن معتبر نیست.'});
-  const assigned=await pool.query<any>('SELECT COUNT(*)::int AS count FROM user_subscriptions WHERE plan_id=$1',[id]);
-  if(Number(assigned.rows[0]?.count)>0)return res.status(409).json({message:'این پلن در سابقه اشتراک کاربران استفاده شده و قابل حذف نیست.'});
+  const references=await pool.query<any>(`SELECT
+    (SELECT COUNT(*)::int FROM user_subscriptions WHERE plan_id=$1) AS subscriptions,
+    (SELECT COUNT(*)::int FROM bluepal_payments WHERE plan_id=$1) AS payments`,[id]);
+  if(Number(references.rows[0]?.subscriptions)>0||Number(references.rows[0]?.payments)>0)return res.status(409).json({message:'این پلن سابقهٔ اشتراک یا فاکتور دارد و برای حفظ سوابق حذف نمی‌شود؛ می‌توانید آن را خاموش کنید.'});
   const result=await pool.query('DELETE FROM subscription_plans WHERE id=$1 RETURNING id',[id]);
   if(!result.rows[0])return res.status(404).json({message:'پلن پیدا نشد.'});res.json({success:true,id:result.rows[0].id});
 }catch(error){next(error);}});
@@ -186,7 +188,7 @@ app.post('/api/users/block',async(req,res,next)=>{try{
 
 app.post('/api/subscriptions', async (req,res,next)=>{ try {
   const {name,description='',priceIrr,quotaBytes,durationDays,simultaneousDevices=1,features=[],active=true}=req.body??{};
-  if(typeof name!=='string'||name.trim().length<2||name.trim().length>80||typeof description!=='string'||!Number.isSafeInteger(Number(priceIrr))||Number(priceIrr)<0||!Number.isSafeInteger(Number(quotaBytes))||Number(quotaBytes)<1||!Number.isInteger(Number(durationDays))||Number(durationDays)<1||!Number.isInteger(Number(simultaneousDevices))||Number(simultaneousDevices)<1||!Array.isArray(features)||features.some((v:unknown)=>typeof v!=='string')) return res.status(400).json({message:'مشخصات اشتراک معتبر نیست.'});
+  if(typeof name!=='string'||name.trim().length<2||name.trim().length>80||typeof description!=='string'||description.length>1000||!Number.isSafeInteger(Number(priceIrr))||Number(priceIrr)<0||!Number.isSafeInteger(Number(quotaBytes))||Number(quotaBytes)<1||!Number.isInteger(Number(durationDays))||Number(durationDays)<1||Number(durationDays)>3650||!Number.isInteger(Number(simultaneousDevices))||Number(simultaneousDevices)<1||Number(simultaneousDevices)>100||!Array.isArray(features)||features.length>50||features.some((v:unknown)=>typeof v!=='string'||v.length>200)||typeof active!=='boolean') return res.status(400).json({message:'مشخصات اشتراک معتبر نیست.'});
   const result=await pool.query(`INSERT INTO subscription_plans(name,description,price_irr,quota_bytes,duration_days,simultaneous_devices,features,active) VALUES($1,$2,$3,$4,$5,$6,$7,$8)
     RETURNING id,name,description,price_irr AS "priceIrr",quota_bytes AS "quotaBytes",duration_days AS "durationDays",simultaneous_devices AS "simultaneousDevices",features,active,is_trial AS "isTrial"`,[name.trim(),description.trim(),priceIrr,quotaBytes,durationDays,simultaneousDevices,JSON.stringify(features),Boolean(active)]); res.status(201).json(result.rows[0]);
  } catch(error:any){if(error?.code==='23505')return res.status(409).json({message:'نام این اشتراک از قبل وجود دارد.'});next(error);}});
@@ -194,8 +196,13 @@ app.post('/api/subscriptions', async (req,res,next)=>{ try {
 app.patch('/api/subscriptions',async(req,res,next)=>{try{
   const id=Number(req.query.id),{name,description,priceIrr,quotaBytes,durationDays,simultaneousDevices,features,active}=req.body??{};
   if(!Number.isSafeInteger(id)||id<1)return res.status(400).json({message:'شناسه اشتراک معتبر نیست.'});
-  const result=await pool.query(`UPDATE subscription_plans SET name=COALESCE($2,name),description=COALESCE($3,description),price_irr=COALESCE($4,price_irr),quota_bytes=COALESCE($5,quota_bytes),duration_days=COALESCE($6,duration_days),simultaneous_devices=COALESCE($7,simultaneous_devices),features=COALESCE($8,features),active=COALESCE($9,active),updated_at=NOW() WHERE id=$1 RETURNING id,name,description,price_irr AS "priceIrr",quota_bytes AS "quotaBytes",duration_days AS "durationDays",simultaneous_devices AS "simultaneousDevices",features,active,is_trial AS "isTrial"`,[id,name?.trim()??null,description?.trim()??null,priceIrr??null,quotaBytes??null,durationDays??null,simultaneousDevices??null,features?JSON.stringify(features):null,active??null]);
-  if(!result.rowCount)return res.status(404).json({message:'اشتراک پیدا نشد.'});res.json(result.rows[0]);
+  if((name!==undefined&&(typeof name!=='string'||name.trim().length<2||name.trim().length>80))||(description!==undefined&&(typeof description!=='string'||description.length>1000))||(priceIrr!==undefined&&(!Number.isSafeInteger(Number(priceIrr))||Number(priceIrr)<0))||(quotaBytes!==undefined&&(!Number.isSafeInteger(Number(quotaBytes))||Number(quotaBytes)<1))||(durationDays!==undefined&&(!Number.isInteger(Number(durationDays))||Number(durationDays)<1||Number(durationDays)>3650))||(simultaneousDevices!==undefined&&(!Number.isInteger(Number(simultaneousDevices))||Number(simultaneousDevices)<1||Number(simultaneousDevices)>100))||(features!==undefined&&(!Array.isArray(features)||features.length>50||features.some((v:unknown)=>typeof v!=='string'||v.length>200)))||(active!==undefined&&typeof active!=='boolean'))return res.status(400).json({message:'مشخصات اشتراک معتبر نیست.'});
+  const db=await pool.connect();try{await db.query('BEGIN');
+  const before=(await db.query<any>('SELECT name FROM subscription_plans WHERE id=$1 FOR UPDATE',[id])).rows[0];if(!before){await db.query('ROLLBACK');return res.status(404).json({message:'اشتراک پیدا نشد.'});}
+  const result=await db.query(`UPDATE subscription_plans SET name=COALESCE($2,name),description=COALESCE($3,description),price_irr=COALESCE($4,price_irr),quota_bytes=COALESCE($5,quota_bytes),duration_days=COALESCE($6,duration_days),simultaneous_devices=COALESCE($7,simultaneous_devices),features=COALESCE($8,features),active=COALESCE($9,active),updated_at=NOW() WHERE id=$1 RETURNING id,name,description,price_irr AS "priceIrr",quota_bytes AS "quotaBytes",duration_days AS "durationDays",simultaneous_devices AS "simultaneousDevices",features,active,is_trial AS "isTrial"`,[id,name?.trim()??null,description?.trim()??null,priceIrr??null,quotaBytes??null,durationDays??null,simultaneousDevices??null,features!==undefined?JSON.stringify(features):null,active??null]);
+  if(before.name!==result.rows[0].name)await db.query('UPDATE users SET plan=$2 WHERE plan=$1',[before.name,result.rows[0].name]);
+  await db.query('COMMIT');res.json(result.rows[0]);
+  }catch(error){await db.query('ROLLBACK').catch(()=>undefined);throw error;}finally{db.release();}
 }catch(error:any){if(error?.code==='23505')return res.status(409).json({message:'نام این اشتراک از قبل وجود دارد.'});next(error);}});
 
 app.post('/api/users',async(req,res,next)=>{try{

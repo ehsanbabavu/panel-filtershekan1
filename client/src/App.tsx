@@ -345,7 +345,7 @@ function SubscriptionView({ token, plans, onPlans, onNotify }: { token: string; 
     onPlans(plans.map(item => item.id === result.id ? { ...item, ...result } : item)); onNotify(result.isTrial ? (result.active ? 'هدیهٔ آزمایشی برای کاربران جدید روشن شد.' : 'هدیهٔ آزمایشی برای کاربران جدید خاموش شد.') : (result.active ? 'پلن روشن شد و در اپ نمایش داده می‌شود.' : 'پلن خاموش شد و برای خرید جدید در اپ نمایش داده نمی‌شود.'));
   } catch (error) { onNotify(error instanceof Error ? error.message : 'تغییر وضعیت پلن انجام نشد.'); } finally { setActiveBusyId(null); } };
   const deletePlan = async (plan: any) => {
-    if (!window.confirm(`پلن «${plan.name}» حذف شود؟ پلن‌های ثبت‌شده در سابقهٔ اشتراک کاربران قابل حذف نیستند.`)) return;
+    if (!window.confirm(`پلن «${plan.name}» حذف شود؟ اگر اشتراک یا فاکتوری به آن وابسته باشد، برای حفظ سوابق حذف نمی‌شود و می‌توانید خاموشش کنید.`)) return;
     try {
       const response = await fetch(`/api/subscriptions?id=${encodeURIComponent(plan.id)}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
       const result = await response.json(); if (!response.ok) throw new Error(result.message || 'حذف پلن انجام نشد.');
