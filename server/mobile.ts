@@ -62,7 +62,8 @@ async function settleBluePalPayment(database: MobileDatabase, paymentId: string)
   const expectedRial = Number(payment.amount_rial) || Number(payment.amount_toman) * 10;
   const verification = await verifyBluePalPayment(config, payment.track_id, expectedRial);
   if (!verification.paid) {
-    const status = verification.reason === 'expired' ? 'expired' : ['failed', 'canceled', 'cancelled'].includes(verification.reason || '') ? 'failed' : 'pending';
+    const localDeadlinePassed = payment.expires_at && Date.now() >= new Date(payment.expires_at).getTime();
+    const status = verification.reason === 'expired' || localDeadlinePassed ? 'expired' : ['failed', 'canceled', 'cancelled'].includes(verification.reason || '') ? 'failed' : 'pending';
     if (status === 'pending') return { paid: false, payment: paymentRow(payment) };
     const update = await database.query<any>("UPDATE bluepal_payments SET status=$2,updated_at=NOW() WHERE public_id=$1 AND status='pending' RETURNING *", [paymentId, status]);
     return { paid: false, payment: paymentRow(update.rows[0] || payment) };
@@ -239,7 +240,8 @@ export async function handleMobileRequest(action: string, req: any, res: any, da
       const callbackUrl = `${appOrigin(req)}/api/mobile?action=payment-return&paymentId=${encodeURIComponent(publicId)}`;
       const invoice = await requestBluePalPayment(config,{amount,callbackUrl,description:`خرید پلن ${selected.name} فیلترشکن`});
       providerInvoiceReceived = true;
-      const updated = await database.query<any>('UPDATE bluepal_payments SET track_id=$2,payment_url=$3,amount_rial=$4,expires_at=$5,card_number=$6,account_holder=$7,updated_at=NOW() WHERE public_id=$1 RETURNING *',[publicId,invoice.trackId,invoice.paymentUrl,invoice.amountRial,invoice.expiresAt ? new Date(invoice.expiresAt) : null,invoice.cardNumber,invoice.accountHolder]);
+      const paymentDeadline = new Date(Date.now() + 10 * 60 * 1000);
+      const updated = await database.query<any>('UPDATE bluepal_payments SET track_id=$2,payment_url=$3,amount_rial=$4,expires_at=$5,card_number=$6,account_holder=$7,updated_at=NOW() WHERE public_id=$1 RETURNING *',[publicId,invoice.trackId,invoice.paymentUrl,invoice.amountRial,paymentDeadline,invoice.cardNumber,invoice.accountHolder]);
       return reply(res,201,paymentRow(updated.rows[0]));
     } catch (error: any) {
       await client.query('ROLLBACK').catch(() => undefined);
