@@ -138,7 +138,7 @@ app.delete('/api/proxies',async(req,res,next)=>{try{const id=Number(req.query.id
 
 app.get('/api/subscriptions', async (_req, res, next) => {
   try { const result=await pool.query(`SELECT p.id,p.name,p.description,p.price_irr AS "priceIrr",p.quota_bytes AS "quotaBytes",
-    p.duration_days AS "durationDays",p.simultaneous_devices AS "simultaneousDevices",p.features,p.active,COUNT(u.id)::int AS users
+    p.duration_days AS "durationDays",p.simultaneous_devices AS "simultaneousDevices",p.features,p.active,p.is_trial AS "isTrial",COUNT(u.id)::int AS users
     FROM subscription_plans p LEFT JOIN users u ON u.plan=p.name GROUP BY p.id ORDER BY p.id`); res.json(result.rows); }
   catch(error){next(error);}
 });
@@ -188,13 +188,13 @@ app.post('/api/subscriptions', async (req,res,next)=>{ try {
   const {name,description='',priceIrr,quotaBytes,durationDays,simultaneousDevices=1,features=[],active=true}=req.body??{};
   if(typeof name!=='string'||name.trim().length<2||name.trim().length>80||typeof description!=='string'||!Number.isSafeInteger(Number(priceIrr))||Number(priceIrr)<0||!Number.isSafeInteger(Number(quotaBytes))||Number(quotaBytes)<1||!Number.isInteger(Number(durationDays))||Number(durationDays)<1||!Number.isInteger(Number(simultaneousDevices))||Number(simultaneousDevices)<1||!Array.isArray(features)||features.some((v:unknown)=>typeof v!=='string')) return res.status(400).json({message:'مشخصات اشتراک معتبر نیست.'});
   const result=await pool.query(`INSERT INTO subscription_plans(name,description,price_irr,quota_bytes,duration_days,simultaneous_devices,features,active) VALUES($1,$2,$3,$4,$5,$6,$7,$8)
-    RETURNING id,name,description,price_irr AS "priceIrr",quota_bytes AS "quotaBytes",duration_days AS "durationDays",simultaneous_devices AS "simultaneousDevices",features,active`,[name.trim(),description.trim(),priceIrr,quotaBytes,durationDays,simultaneousDevices,JSON.stringify(features),Boolean(active)]); res.status(201).json(result.rows[0]);
+    RETURNING id,name,description,price_irr AS "priceIrr",quota_bytes AS "quotaBytes",duration_days AS "durationDays",simultaneous_devices AS "simultaneousDevices",features,active,is_trial AS "isTrial"`,[name.trim(),description.trim(),priceIrr,quotaBytes,durationDays,simultaneousDevices,JSON.stringify(features),Boolean(active)]); res.status(201).json(result.rows[0]);
  } catch(error:any){if(error?.code==='23505')return res.status(409).json({message:'نام این اشتراک از قبل وجود دارد.'});next(error);}});
 
 app.patch('/api/subscriptions',async(req,res,next)=>{try{
   const id=Number(req.query.id),{name,description,priceIrr,quotaBytes,durationDays,simultaneousDevices,features,active}=req.body??{};
   if(!Number.isSafeInteger(id)||id<1)return res.status(400).json({message:'شناسه اشتراک معتبر نیست.'});
-  const result=await pool.query(`UPDATE subscription_plans SET name=COALESCE($2,name),description=COALESCE($3,description),price_irr=COALESCE($4,price_irr),quota_bytes=COALESCE($5,quota_bytes),duration_days=COALESCE($6,duration_days),simultaneous_devices=COALESCE($7,simultaneous_devices),features=COALESCE($8,features),active=COALESCE($9,active),updated_at=NOW() WHERE id=$1 RETURNING id,name,description,price_irr AS "priceIrr",quota_bytes AS "quotaBytes",duration_days AS "durationDays",simultaneous_devices AS "simultaneousDevices",features,active`,[id,name?.trim()??null,description?.trim()??null,priceIrr??null,quotaBytes??null,durationDays??null,simultaneousDevices??null,features?JSON.stringify(features):null,active??null]);
+  const result=await pool.query(`UPDATE subscription_plans SET name=COALESCE($2,name),description=COALESCE($3,description),price_irr=COALESCE($4,price_irr),quota_bytes=COALESCE($5,quota_bytes),duration_days=COALESCE($6,duration_days),simultaneous_devices=COALESCE($7,simultaneous_devices),features=COALESCE($8,features),active=COALESCE($9,active),updated_at=NOW() WHERE id=$1 RETURNING id,name,description,price_irr AS "priceIrr",quota_bytes AS "quotaBytes",duration_days AS "durationDays",simultaneous_devices AS "simultaneousDevices",features,active,is_trial AS "isTrial"`,[id,name?.trim()??null,description?.trim()??null,priceIrr??null,quotaBytes??null,durationDays??null,simultaneousDevices??null,features?JSON.stringify(features):null,active??null]);
   if(!result.rowCount)return res.status(404).json({message:'اشتراک پیدا نشد.'});res.json(result.rows[0]);
 }catch(error:any){if(error?.code==='23505')return res.status(409).json({message:'نام این اشتراک از قبل وجود دارد.'});next(error);}});
 

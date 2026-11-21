@@ -85,8 +85,13 @@ export async function initializeSchema(database: Pick<Pool, 'query'>) {
       id BIGSERIAL PRIMARY KEY, name TEXT NOT NULL UNIQUE, description TEXT NOT NULL DEFAULT '',
       price_irr BIGINT NOT NULL DEFAULT 0 CHECK (price_irr >= 0), quota_bytes BIGINT NOT NULL CHECK (quota_bytes > 0),
       duration_days INTEGER NOT NULL CHECK (duration_days > 0), simultaneous_devices INTEGER NOT NULL DEFAULT 1 CHECK (simultaneous_devices > 0),
-      features JSONB NOT NULL DEFAULT '[]'::jsonb, active BOOLEAN NOT NULL DEFAULT TRUE,
+      features JSONB NOT NULL DEFAULT '[]'::jsonb, active BOOLEAN NOT NULL DEFAULT TRUE, is_trial BOOLEAN NOT NULL DEFAULT FALSE,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    ALTER TABLE subscription_plans ADD COLUMN IF NOT EXISTS is_trial BOOLEAN NOT NULL DEFAULT FALSE;
+    UPDATE subscription_plans SET is_trial=TRUE WHERE name='آزمایشی' AND is_trial=FALSE;
+    CREATE TABLE IF NOT EXISTS trial_device_claims (
+      device_hash TEXT PRIMARY KEY, user_id BIGINT NOT NULL, claimed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
     CREATE TABLE IF NOT EXISTS user_subscriptions (
       id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -126,10 +131,10 @@ export async function initializeSchema(database: Pick<Pool, 'query'>) {
     ALTER TABLE app_user_sessions ADD COLUMN IF NOT EXISTS vpn_sequence BIGINT NOT NULL DEFAULT 0;
     CREATE INDEX IF NOT EXISTS app_user_sessions_user_id_idx ON app_user_sessions(user_id);
   `);
-  await database.query(`INSERT INTO subscription_plans(name,description,price_irr,quota_bytes,duration_days,simultaneous_devices,features)
-    VALUES ('حرفه‌ای','برای تجربه‌ای کامل و بدون محدودیت',299000,107374182400,30,5,'["۱۰۰ گیگابایت حجم","اتصال هم‌زمان تا ۵ دستگاه","پشتیبانی اولویت‌دار"]'),
-    ('پایه','تمام چیزهایی که برای شروع نیاز دارید',149000,107374182400,30,2,'["۱۰۰ گیگابایت حجم","اتصال هم‌زمان تا ۲ دستگاه","پشتیبانی استاندارد"]'),
-    ('آزمایشی','آشنایی با سرویس',0,10737418240,7,1,'["۱۰ گیگابایت حجم","اتصال برای ۷ روز","پشتیبانی استاندارد"]') ON CONFLICT(name) DO NOTHING`);
+  await database.query(`INSERT INTO subscription_plans(name,description,price_irr,quota_bytes,duration_days,simultaneous_devices,features,is_trial)
+    VALUES ('حرفه‌ای','برای تجربه‌ای کامل و بدون محدودیت',299000,107374182400,30,5,'["۱۰۰ گیگابایت حجم","اتصال هم‌زمان تا ۵ دستگاه","پشتیبانی اولویت‌دار"]',FALSE),
+    ('پایه','تمام چیزهایی که برای شروع نیاز دارید',149000,107374182400,30,2,'["۱۰۰ گیگابایت حجم","اتصال هم‌زمان تا ۲ دستگاه","پشتیبانی استاندارد"]',FALSE),
+    ('آزمایشی','آشنایی با سرویس',0,10737418240,7,1,'["۱۰ گیگابایت حجم","اتصال برای ۷ روز","پشتیبانی استاندارد"]',TRUE) ON CONFLICT(name) DO NOTHING`);
   await database.query(`UPDATE users u SET subscription_started_at=COALESCE(u.subscription_started_at,u.created_at),
     subscription_expires_at=COALESCE(u.subscription_expires_at,u.created_at+CASE WHEN u.plan='آزمایشی' THEN INTERVAL '7 days' ELSE INTERVAL '30 days' END),
     subscription_quota_bytes=COALESCE(u.subscription_quota_bytes,p.quota_bytes)

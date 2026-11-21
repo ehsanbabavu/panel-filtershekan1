@@ -1,4 +1,5 @@
 import bcrypt from 'bcryptjs';
+import { createHash } from 'node:crypto';
 import { reportPresence, type MobileDatabase } from './presence.js';
 import { readBluePalConfig, requestBluePalPayment, verifyBluePalPayment } from './bluepal.js';
 
@@ -121,22 +122,45 @@ export async function handleMobileRequest(action: string, req: any, res: any, da
       return reply(res, 400, { message: 'رمز عبور باید حداقل ۸ نویسه باشد.' });
     }
     try {
+      const deviceId = String(body.deviceId || '').trim();
+      const deviceHash = deviceId.length >= 8 && deviceId.length <= 256
+        ? createHash('sha256').update(deviceId).digest('hex') : '';
       const passwordHash = await bcrypt.hash(password, 10);
-      const created = await database.query<{ id: string; name: string; username: string }>(
-        `INSERT INTO users (name, username, status, plan, last_seen, password_hash)
-         VALUES ($1, $2, 'آفلاین', 'آزمایشی', 'هنوز متصل نشده', $3)
-        RETURNING id, name, username, created_at AS "createdAt"`,
-        [name, username, passwordHash],
-      );
-      const user = created.rows[0];
-      await database.query(`UPDATE users SET subscription_started_at=NOW(),subscription_expires_at=NOW()+INTERVAL '7 days',
-        subscription_quota_bytes=(SELECT quota_bytes FROM subscription_plans WHERE name='آزمایشی'),subscription_used_bytes=0 WHERE id=$1`, [user.id]);
-      await database.query(`INSERT INTO user_subscriptions(user_id,plan_id,started_at,expires_at,quota_bytes,used_bytes,status)
-        SELECT u.id,p.id,u.subscription_started_at,u.subscription_expires_at,u.subscription_quota_bytes,0,'active'
-        FROM users u JOIN subscription_plans p ON p.name=u.plan WHERE u.id=$1`, [user.id]);
-      const token = crypto.randomUUID();
-      await database.query('INSERT INTO app_user_sessions (token, user_id) VALUES ($1, $2)', [token, user.id]);
-      return reply(res, 201, { token, ...user });
+      const client = await database.connect();
+      try {
+        await client.query('BEGIN');
+        const created = await client.query<any>(`INSERT INTO users (name,username,status,plan,last_seen,password_hash)
+          VALUES($1,$2,'آفلاین','بدون اشتراک','هنوز متصل نشده',$3)
+          RETURNING id,name,username,created_at AS "createdAt"`, [name, username, passwordHash]);
+        const user = created.rows[0];
+        const trial = await client.query<any>('SELECT id,name,quota_bytes,duration_days FROM subscription_plans WHERE is_trial=TRUE AND active=TRUE ORDER BY id LIMIT 1 FOR SHARE');
+        let trialGranted = false;
+        if (deviceHash && trial.rows[0]) {
+          const claim = await client.query<any>(`INSERT INTO trial_device_claims(device_hash,user_id)
+            VALUES($1,$2) ON CONFLICT(device_hash) DO NOTHING RETURNING device_hash`, [deviceHash, user.id]);
+          if (claim.rows[0]) {
+            trialGranted = true;
+            const sub = await client.query<any>(`UPDATE users SET plan=$4,subscription_started_at=NOW(),
+              subscription_expires_at=NOW()+($2::int*INTERVAL '1 day'),subscription_quota_bytes=$3,subscription_used_bytes=0
+              WHERE id=$1 RETURNING subscription_started_at,subscription_expires_at,subscription_quota_bytes`,
+            [user.id, trial.rows[0].duration_days, trial.rows[0].quota_bytes, trial.rows[0].name]);
+            await client.query(`INSERT INTO user_subscriptions(user_id,plan_id,started_at,expires_at,quota_bytes,used_bytes,status)
+              VALUES($1,$2,$3,$4,$5,0,'active')`, [user.id, trial.rows[0].id, sub.rows[0].subscription_started_at,
+              sub.rows[0].subscription_expires_at, sub.rows[0].subscription_quota_bytes]);
+          }
+        }
+        await client.query(`INSERT INTO chat_messages(user_id,sender_role,author,message,read_by_admin)
+          VALUES($1,'admin','پشتیبانی','سلام، به فیلترشکن آریا خوش آمدید! حساب شما با موفقیت ساخته شد. اگر در اتصال یا استفاده از سرویس به راهنمایی نیاز داشتید، همین‌جا برای ما پیام بگذارید.',TRUE)`, [user.id]);
+        const token = crypto.randomUUID();
+        await client.query('INSERT INTO app_user_sessions (token,user_id) VALUES ($1,$2)', [token, user.id]);
+        const refreshed = await client.query<any>(`SELECT id,name,username,plan,created_at AS "createdAt",
+          subscription_started_at AS "subscriptionStartedAt",subscription_expires_at AS "subscriptionExpiresAt",
+          subscription_quota_bytes AS "subscriptionQuotaBytes",subscription_used_bytes AS "subscriptionUsedBytes"
+          FROM users WHERE id=$1`, [user.id]);
+        await client.query('COMMIT');
+        return reply(res, 201, { token, ...refreshed.rows[0], trialGranted });
+      } catch (error) { await client.query('ROLLBACK').catch(() => undefined); throw error; }
+      finally { client.release(); }
     } catch (error: any) {
       if (error?.code === '23505') return reply(res, 409, { message: 'این ایمیل یا نام کاربری قبلاً ثبت شده است.' });
       throw error;
@@ -194,7 +218,7 @@ export async function handleMobileRequest(action: string, req: any, res: any, da
     if (!session.rows[0]) return reply(res, 401, { message: 'نشست شما منقضی شده است.' });
     const plans = await database.query<any>(`SELECT id,name,description,price_irr AS "priceToman",quota_bytes AS "quotaBytes",
       duration_days AS "durationDays",simultaneous_devices AS "simultaneousDevices",features
-      FROM subscription_plans WHERE active=true ORDER BY price_irr,id`);
+      FROM subscription_plans WHERE active=true AND is_trial=FALSE ORDER BY price_irr,id`);
     return reply(res, 200, plans.rows);
   }
   if (action === 'payment-create' && method === 'POST') {
