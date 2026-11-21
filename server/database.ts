@@ -84,6 +84,14 @@ export async function initializeSchema(database: Pick<Pool, 'query'>) {
       status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','expired','exhausted','cancelled')), created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
     CREATE INDEX IF NOT EXISTS user_subscriptions_user_active_idx ON user_subscriptions(user_id, expires_at DESC);
+    CREATE TABLE IF NOT EXISTS bluepal_payments (
+      id BIGSERIAL PRIMARY KEY, public_id UUID NOT NULL UNIQUE, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      plan_id BIGINT NOT NULL REFERENCES subscription_plans(id), plan_name TEXT NOT NULL, quota_bytes BIGINT NOT NULL,
+      duration_days INTEGER NOT NULL, amount_toman BIGINT NOT NULL CHECK (amount_toman >= 0), track_id TEXT UNIQUE, payment_url TEXT,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','paid','failed','expired')), reference TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), paid_at TIMESTAMPTZ
+    );
+    CREATE INDEX IF NOT EXISTS bluepal_payments_user_created_idx ON bluepal_payments(user_id,created_at DESC);
     CREATE TABLE IF NOT EXISTS mobile_usage_reports (
       user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, token TEXT NOT NULL,
       sequence BIGINT NOT NULL, cumulative_bytes BIGINT NOT NULL CHECK (cumulative_bytes >= 0),

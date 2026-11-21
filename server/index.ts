@@ -1,7 +1,7 @@
 import express from 'express';
 import bcrypt from 'bcryptjs';
 import { initializeDatabase, pool } from './database.js';
-import { createMobileHandler } from './mobile.js';
+import { createMobileHandler, handleMobileRequest } from './mobile.js';
 import { selectUsers } from './presence.js';
 import { handleBluePalAdminRequest } from './bluepal.js';
 
@@ -11,6 +11,12 @@ export { initializeDatabase } from './database.js';
 
 app.use(express.json());
 app.all(['/api/mobile', '/api/mobile/:action'], createMobileHandler(pool, initializeDatabase));
+app.get('/api/mobile', async (req, res, next) => {
+  try {
+    if (String(req.query.action || '').toLowerCase() !== 'payment-return') return next();
+    return await handleMobileRequest('payment-return', req, res, pool);
+  } catch (error) { next(error); }
+});
 app.use('/api', (_req, res, next) => { res.setHeader('Cache-Control', 'no-store'); next(); });
 
 app.get('/api/health', async (_req, res) => {
