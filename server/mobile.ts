@@ -37,11 +37,16 @@ async function activatePaidPayment(database: MobileDatabase, paymentId: string, 
     if (payment.status !== 'paid') {
       const dates = await client.query<any>("SELECT NOW() AS started_at,NOW()+($1::int*INTERVAL '1 day') AS expires_at", [payment.duration_days]);
       const { started_at: startedAt, expires_at: expiresAt } = dates.rows[0];
-      await client.query("UPDATE user_subscriptions SET status='cancelled' WHERE user_id=$1 AND status='active'", [payment.user_id]);
+      const current = await client.query<any>(`SELECT subscription_used_bytes AS used_bytes,CASE WHEN subscription_expires_at>NOW()
+        THEN GREATEST(subscription_quota_bytes-subscription_used_bytes,0) ELSE 0 END AS remaining_bytes
+        FROM users WHERE id=$1 FOR UPDATE`, [payment.user_id]);
+      const remainingBytes = BigInt(current.rows[0]?.remaining_bytes || 0);
+      const newQuota = BigInt(payment.quota_bytes || 0) + remainingBytes;
+      await client.query("UPDATE user_subscriptions SET status='cancelled',used_bytes=$2 WHERE user_id=$1 AND status='active'", [payment.user_id, current.rows[0]?.used_bytes || 0]);
       await client.query(`INSERT INTO user_subscriptions(user_id,plan_id,started_at,expires_at,quota_bytes,used_bytes,status)
-        VALUES($1,$2,$3,$4,$5,0,'active')`, [payment.user_id, payment.plan_id, startedAt, expiresAt, payment.quota_bytes]);
+        VALUES($1,$2,$3,$4,$5,0,'active')`, [payment.user_id, payment.plan_id, startedAt, expiresAt, newQuota.toString()]);
       await client.query(`UPDATE users SET plan=$2,subscription_started_at=$3,subscription_expires_at=$4,
-        subscription_quota_bytes=$5,subscription_used_bytes=0 WHERE id=$1`, [payment.user_id, payment.plan_name, startedAt, expiresAt, payment.quota_bytes]);
+        subscription_quota_bytes=$5,subscription_used_bytes=0 WHERE id=$1`, [payment.user_id, payment.plan_name, startedAt, expiresAt, newQuota.toString()]);
       await client.query(`UPDATE bluepal_payments SET status='paid',reference=$2,paid_at=NOW(),updated_at=NOW() WHERE public_id=$1`, [paymentId, reference]);
     }
     await client.query('COMMIT');
