@@ -8,6 +8,10 @@ export type MobileDatabase = Pick<Pool, 'query' | 'connect'>;
 const userFields = `
   u.id, u.name, u.username, u.plan, u.blocked,
   COALESCE((SELECT p.simultaneous_devices FROM subscription_plans p WHERE p.name=u.plan),1) AS simultaneous_device_limit,
+  (SELECT COUNT(DISTINCT COALESCE(s.device_id,s.token))::int FROM app_user_sessions s
+    WHERE s.user_id=u.id AND (s.expires_at IS NULL OR s.expires_at>NOW())
+      AND s.vpn_connected AND s.vpn_heartbeat_at>NOW()-INTERVAL '${PRESENCE_TTL_SECONDS} seconds'
+  ) AS "connectedDevices",
   CASE WHEN EXISTS (
     SELECT 1 FROM app_user_sessions s
     WHERE s.user_id = u.id
