@@ -24,7 +24,7 @@ function appOrigin(req: any) {
 }
 
 function paymentRow(row: any) {
-  return { paymentId: row.public_id, status: row.status, planName: row.plan_name, amountToman: Number(row.amount_toman), paymentUrl: row.payment_url || null, trackId: row.track_id || null, reference: row.reference || null };
+  return { paymentId: row.public_id, status: row.status, planName: row.plan_name, amountToman: Number(row.amount_toman), amountRial: Number(row.amount_rial || 0), paymentUrl: row.payment_url || null, trackId: row.track_id || null, reference: row.reference || null, expiresAt: row.expires_at || null, cardNumber: row.card_number || '', accountHolder: row.account_holder || '' };
 }
 
 async function activatePaidPayment(database: MobileDatabase, paymentId: string, reference: string) {
@@ -74,15 +74,27 @@ export async function settleMobileBluePalPayment(database: MobileDatabase, payme
   return settleBluePalPayment(database, paymentId);
 }
 
-function paymentReturnPage(paid: boolean) {
+function paymentDetailsPage(payment: any) {
+  const safe = JSON.stringify({ paymentId: String(payment.public_id), planName: String(payment.plan_name || 'اشتراک'), amountToman: Number(payment.amount_toman || 0), amountRial: Number(payment.amount_rial || Number(payment.amount_toman || 0) * 10), trackId: String(payment.track_id || ''), expiresAt: payment.expires_at ? new Date(payment.expires_at).toISOString() : null, cardNumber: String(payment.card_number || ''), accountHolder: String(payment.account_holder || ''), paymentUrl: String(payment.payment_url || '') }).replace(/</g, '\\u003c');
+  return `<!doctype html><html lang="fa" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#f5f8fa"><title>پرداخت اشتراک</title><style>
+  *{box-sizing:border-box}body{margin:0;min-height:100vh;background:#f4f7f8;color:#17232c;font:14px Tahoma,Arial,sans-serif}.wrap{width:min(100%,520px);margin:auto;padding:16px 14px 28px}.card{overflow:hidden;border:1px solid #dce7e9;border-radius:24px;background:#fff;box-shadow:0 10px 35px #0b29340d}.head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:16px;color:#fff;background:linear-gradient(105deg,#065f46,#0f766e,#102333)}.head b{font-size:14px}.timer{padding:7px 10px;border:1px solid #ffffff30;border-radius:12px;background:#0003;color:#fcd34d;font-weight:800;white-space:nowrap}.body{display:grid;gap:11px;padding:15px}.intro{margin:0 0 2px;color:#51616d;font-size:12px;line-height:1.9}.box{padding:14px;border:1px solid #e1e8ea;border-radius:17px;background:#fbfcfc}.label{display:block;margin-bottom:9px;color:#667580;font-size:11px;font-weight:700}.value{display:block;text-align:center;font-size:18px;font-weight:900;letter-spacing:.6px;direction:ltr;overflow-wrap:anywhere}.green{color:#087f5b}.sub{margin:9px 0 0;color:#74828b;font-size:10px;line-height:1.8;text-align:center}.copy{display:block;margin:10px auto 0;padding:9px 14px;border:0;border-radius:11px;background:#e6f7f0;color:#087f5b;font-weight:800}.row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:13px;border:1px solid #e1e8ea;border-radius:14px;background:#fbfcfc;font-size:11px}.row b{max-width:64%;text-align:left;overflow-wrap:anywhere}.status{padding:12px;border:1px solid #cfe9dc;border-radius:13px;background:#effaf4;color:#18764e;font-size:11px;line-height:1.9}.status.wait{border-color:#f0e1bc;background:#fffaf0;color:#87621d}.status.bad{border-color:#f0cfd1;background:#fff5f5;color:#a83c45}.return{width:100%;height:44px;border:0;border-radius:14px;background:linear-gradient(90deg,#059669,#0f766e);color:white;font-weight:800}.frame{width:100%;height:58vh;border:1px solid #e1e8ea;border-radius:14px;background:white}.muted{color:#72818b;font-size:10px;line-height:1.8;text-align:center}@media(max-width:360px){.wrap{padding:10px}.body{padding:11px}.value{font-size:16px}}
+  </style></head><body><main class="wrap"><section class="card"><header class="head"><b>پرداخت اشتراک · بلوپال</b><span id="timer" class="timer">مهلت: --:--</span></header><div class="body"><p class="intro" id="plan"></p><div id="transfer"><div class="box"><span class="label">شماره کارت مقصد</span><strong class="value" id="card">—</strong><button class="copy" id="copyCard">کپی شماره کارت</button></div><div class="box"><span class="label">مبلغ دقیق واریز (ریال)</span><strong class="value green" id="amount">—</strong><p class="sub">برای شناسایی خودکار فاکتور، مبلغ را دقیقاً به ریال واریز کنید.</p><button class="copy" id="copyAmount">کپی مبلغ ریالی</button></div><div class="row"><span>شناسه رسمی فاکتور</span><b id="invoice">—</b></div><div class="row"><span>صاحب حساب</span><b id="holder">—</b></div></div><div id="online" hidden><p class="muted">این پذیرنده پرداخت آنلاین دارد. پرداخت در همین اپ باز می‌شود و پس از بازگشت، وضعیت از سرور بررسی خواهد شد.</p><iframe id="frame" class="frame" title="صفحه امن پرداخت" referrerpolicy="no-referrer"></iframe><a id="openLink" class="copy" target="_self">ادامه پرداخت در همین اپ</a></div><div class="status wait" id="status">در حال بررسی وضعیت فاکتور از سرور سایت…</div><button id="return" class="return" hidden onclick="goHome()">بازگشت به خانه</button></div></section><p class="muted">تایید پرداخت مستقیماً از وب‌سرویس بلوپال انجام می‌شود؛ رسید یا تصویر پرداخت به‌تنهایی ملاک فعال‌سازی نیست.</p></main><script>
+  const P=${safe};const $=id=>document.getElementById(id);const money=n=>Number(n||0).toLocaleString('fa-IR');$('plan').textContent='اشتراک انتخاب‌شده: '+P.planName+' · مبلغ '+money(P.amountToman)+' تومان';$('amount').textContent=money(P.amountRial);$('invoice').textContent=P.trackId||'—';$('holder').textContent=P.accountHolder||'—';if(P.cardNumber){$('card').textContent=P.cardNumber.replace(/(.{4})/g,'$1 ').trim()}else{$('transfer').hidden=true;$('online').hidden=false;$('frame').src=P.paymentUrl;$('openLink').href=P.paymentUrl}
+  let seconds=P.expiresAt?Math.max(0,Math.floor((Date.parse(P.expiresAt)-Date.now())/1000)):1800;const timer=setInterval(()=>{seconds=Math.max(0,seconds-1);$('timer').textContent='مهلت: '+String(Math.floor(seconds/60)).padStart(2,'0')+':'+String(seconds%60).padStart(2,'0')},1000);function copy(value,button){const done=()=>{button.textContent='کپی شد';setTimeout(()=>button.textContent=button.id==='copyCard'?'کپی شماره کارت':'کپی مبلغ ریالی',1500)};if(navigator.clipboard)navigator.clipboard.writeText(value).then(done).catch(()=>fallback());else fallback();function fallback(){const input=document.createElement('textarea');input.value=value;document.body.appendChild(input);input.select();document.execCommand('copy');input.remove();done()}}$('copyCard').onclick=()=>copy(P.cardNumber,$('copyCard'));$('copyAmount').onclick=()=>copy(String(P.amountRial),$('copyAmount'));function goHome(){if(window.Native&&Native.goHome)Native.goHome();else $('status').textContent='پرداخت بررسی شد؛ می‌توانید صفحه را ببندید و به خانه برگردید.'}
+  async function check(){try{const r=await fetch('/api/mobile?action=payment-page-status&paymentId='+encodeURIComponent(P.paymentId),{cache:'no-store'});const d=await r.json();if(!r.ok)throw new Error(d.message||'بررسی پرداخت ناموفق بود');if(d.status==='paid'){clearInterval(timer);$('status').className='status';$('status').textContent='پرداخت تایید و اشتراک فعال شد. در حال بازگشت به خانه…';$('return').hidden=false;setTimeout(goHome,1800)}else if(d.status==='expired'||d.status==='failed'){clearInterval(timer);$('status').className='status bad';$('status').textContent=d.status==='expired'?'مهلت فاکتور تمام شده است. از داخل اپ یک فاکتور تازه صادر کنید.':'پرداخت لغو یا ناموفق شد.';if(seconds===0)$('return').hidden=false}else{ $('status').className='status wait';$('status').textContent=seconds===0?'مهلت پرداخت تمام شده؛ وضعیت نهایی در حال بررسی است…':'در انتظار پرداخت؛ بررسی خودکار ادامه دارد.'}}catch(e){$('status').className='status wait';$('status').textContent=(e.message||'ارتباط برقرار نشد')+'؛ بررسی دوباره ادامه دارد.'}}check();setInterval(check,4000);
+  </script></body></html>`;
+}
+
+function paymentReturnPage(paid: boolean, paymentId = '') {
   const title = paid ? 'پرداخت تایید شد' : 'در انتظار تایید پرداخت';
-  const message = paid ? 'اشتراک شما فعال شد. به اپلیکیشن برگردید.' : 'وضعیت پرداخت هنوز نهایی نشده است. اپلیکیشن را باز کنید تا وضعیت دوباره بررسی شود.';
-  return `<!doctype html><html lang="fa" dir="rtl"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#061329"><title>${title}</title><body style="margin:0;min-height:100vh;display:grid;place-items:center;background:#020817;color:#f5f8ff;font:16px Tahoma,Arial,sans-serif"><main style="max-width:420px;margin:24px;padding:28px;border:1px solid #00dcca;border-radius:24px;background:linear-gradient(145deg,#0c2149,#08152f);text-align:center"><h2>${title}</h2><p>${message}</p><p style="color:#aab8e8;font-size:13px">می‌توانید این صفحه را ببندید.</p></main></body></html>`;
+  const message = paid ? 'اشتراک شما فعال شد. در حال بازگشت به اپلیکیشن…' : 'وضعیت پرداخت از سایت در حال بررسی است.';
+  const safeId = JSON.stringify(paymentId).replace(/</g, '\\u003c');
+  return `<!doctype html><html lang="fa" dir="rtl"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#061329"><title>${title}</title><body style="margin:0;min-height:100vh;display:grid;place-items:center;background:#f4f7f8;color:#17232c;font:15px Tahoma,Arial,sans-serif"><main style="max-width:420px;margin:24px;padding:26px;border:1px solid #dce7e9;border-radius:24px;background:white;text-align:center"><h2 id="title">${title}</h2><p id="message">${message}</p><button id="home" hidden style="padding:12px 22px;border:0;border-radius:12px;background:#0f766e;color:white;font-weight:bold" onclick="goHome()">بازگشت به خانه</button></main><script>const pid=${safeId};function goHome(){if(window.Native&&Native.goHome)Native.goHome()}async function poll(){try{const r=await fetch('/api/mobile?action=payment-page-status&paymentId='+encodeURIComponent(pid),{cache:'no-store'});const d=await r.json();if(d.status==='paid'){document.getElementById('title').textContent='پرداخت تایید شد';document.getElementById('message').textContent='اشتراک فعال شد؛ در حال بازگشت به اپلیکیشن…';document.getElementById('home').hidden=false;setTimeout(goHome,1500)}}catch(e){}}poll();setInterval(poll,3000);</script></body></html>`;
 }
 
 export async function handleMobileRequest(action: string, req: any, res: any, database: MobileDatabase) {
   const method = String(req.method || 'GET').toUpperCase();
-  if (!['register', 'login', 'me', 'logout', 'presence', 'usage', 'proxy', 'chat', 'plans', 'payment-create', 'payment-status', 'payment-return'].includes(action)) {
+  if (!['register', 'login', 'me', 'logout', 'presence', 'usage', 'proxy', 'chat', 'plans', 'payment-create', 'payment-status', 'payment-page', 'payment-page-status', 'payment-return'].includes(action)) {
     return reply(res, 404, { message: 'مسیر پیدا نشد.' });
   }
 
@@ -143,12 +155,32 @@ export async function handleMobileRequest(action: string, req: any, res: any, da
 
   const token = String(req.headers?.authorization || '').replace(/^Bearer\s+/i, '');
   const query = new URL(req.originalUrl || req.url || '/', 'http://localhost').searchParams;
+  if (action === 'payment-page' && method === 'GET') {
+    const paymentId = String(query.get('paymentId') || '');
+    if (!/^[0-9a-f-]{36}$/i.test(paymentId)) return reply(res, 400, { message: 'شناسه فاکتور معتبر نیست.' });
+    const found = await database.query<any>(`SELECT public_id,plan_name,amount_toman,amount_rial,track_id,expires_at,card_number,account_holder,payment_url,status
+      FROM bluepal_payments WHERE public_id=$1`, [paymentId]);
+    if (!found.rows[0]) return reply(res, 404, { message: 'فاکتور برای نمایش پیدا نشد.' });
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-store');
+    return res.status(200).send(paymentDetailsPage(found.rows[0]));
+  }
+  if (action === 'payment-page-status' && method === 'GET') {
+    const paymentId = String(query.get('paymentId') || '');
+    if (!/^[0-9a-f-]{36}$/i.test(paymentId)) return reply(res, 400, { message: 'شناسه فاکتور معتبر نیست.' });
+    try {
+      const result = await settleBluePalPayment(database, paymentId);
+      return reply(res, result.missing ? 404 : 200, result.payment || { status: 'missing' });
+    } catch (error: any) { return reply(res, 502, { message: String(error?.message || 'بررسی پرداخت از بلوپال انجام نشد.') }); }
+  }
   if (action === 'payment-return' && method === 'GET') {
+    const paymentId = String(query.get('paymentId') || '');
     let paid = false;
-    try { paid = Boolean((await settleBluePalPayment(database, String(query.get('paymentId') || ''))).paid); }
+    try { paid = Boolean((await settleBluePalPayment(database, paymentId)).paid); }
     catch (error) { console.warn('BluePal return verification deferred:', error); }
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
-    return res.status(200).send(paymentReturnPage(paid));
+    res.setHeader('Cache-Control', 'no-store');
+    return res.status(200).send(paymentReturnPage(paid, paymentId));
   }
   if (action === 'plans' && method === 'GET') {
     if (!token) return reply(res, 401, { message: 'برای دیدن پلن‌ها وارد حساب شوید.' });
@@ -207,7 +239,7 @@ export async function handleMobileRequest(action: string, req: any, res: any, da
       const callbackUrl = `${appOrigin(req)}/api/mobile?action=payment-return&paymentId=${encodeURIComponent(publicId)}`;
       const invoice = await requestBluePalPayment(config,{amount,callbackUrl,description:`خرید پلن ${selected.name} فیلترشکن`});
       providerInvoiceReceived = true;
-      const updated = await database.query<any>('UPDATE bluepal_payments SET track_id=$2,payment_url=$3,amount_rial=$4,expires_at=$5,updated_at=NOW() WHERE public_id=$1 RETURNING *',[publicId,invoice.trackId,invoice.paymentUrl,invoice.amountRial,invoice.expiresAt ? new Date(invoice.expiresAt) : null]);
+      const updated = await database.query<any>('UPDATE bluepal_payments SET track_id=$2,payment_url=$3,amount_rial=$4,expires_at=$5,card_number=$6,account_holder=$7,updated_at=NOW() WHERE public_id=$1 RETURNING *',[publicId,invoice.trackId,invoice.paymentUrl,invoice.amountRial,invoice.expiresAt ? new Date(invoice.expiresAt) : null,invoice.cardNumber,invoice.accountHolder]);
       return reply(res,201,paymentRow(updated.rows[0]));
     } catch (error: any) {
       await client.query('ROLLBACK').catch(() => undefined);

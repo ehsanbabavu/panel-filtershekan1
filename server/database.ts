@@ -99,12 +99,14 @@ export async function initializeSchema(database: Pick<Pool, 'query'>) {
       id BIGSERIAL PRIMARY KEY, public_id UUID NOT NULL UNIQUE, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       plan_id BIGINT NOT NULL REFERENCES subscription_plans(id), plan_name TEXT NOT NULL, quota_bytes BIGINT NOT NULL,
       duration_days INTEGER NOT NULL, amount_toman BIGINT NOT NULL CHECK (amount_toman >= 0), amount_rial BIGINT NOT NULL DEFAULT 0,
-      track_id TEXT UNIQUE, payment_url TEXT, expires_at TIMESTAMPTZ,
+      track_id TEXT UNIQUE, payment_url TEXT, expires_at TIMESTAMPTZ, card_number TEXT NOT NULL DEFAULT '', account_holder TEXT NOT NULL DEFAULT '',
       status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','paid','failed','expired')), reference TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), paid_at TIMESTAMPTZ
     );
     ALTER TABLE bluepal_payments ADD COLUMN IF NOT EXISTS amount_rial BIGINT NOT NULL DEFAULT 0;
     ALTER TABLE bluepal_payments ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;
+    ALTER TABLE bluepal_payments ADD COLUMN IF NOT EXISTS card_number TEXT NOT NULL DEFAULT '';
+    ALTER TABLE bluepal_payments ADD COLUMN IF NOT EXISTS account_holder TEXT NOT NULL DEFAULT '';
     UPDATE bluepal_payments SET amount_rial=amount_toman*10 WHERE amount_rial=0 AND amount_toman>0;
     CREATE INDEX IF NOT EXISTS bluepal_payments_user_created_idx ON bluepal_payments(user_id,created_at DESC);
     CREATE TABLE IF NOT EXISTS mobile_usage_reports (

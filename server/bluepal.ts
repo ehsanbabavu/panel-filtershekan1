@@ -1,6 +1,6 @@
 type Database = { query: (sql: string, values?: unknown[]) => Promise<any> };
 
-export type BluePalConfig = { api_key: string; merchant_id: string; base_url: string; custom_endpoint: string; card_number?: string; enabled: boolean };
+export type BluePalConfig = { api_key: string; merchant_id: string; base_url: string; custom_endpoint: string; card_number?: string; account_holder?: string; enabled: boolean };
 
 function send(res: any, status: number, body: unknown) {
   return res.status(status).json(body);
@@ -92,7 +92,7 @@ async function requestBluePalInvoice(config: BluePalConfig, args: { amountToman:
   }
   const finalAmountRial = modern ? amountRial : (Number(data?.final_amount) || Number(data?.amount) || amountRial);
   const mode = String(data?.mode || (/^blu_test_/i.test(config.api_key) ? 'sandbox' : /^blu_live_/i.test(config.api_key) ? 'live' : 'unknown')).toLowerCase();
-  return { trackId: String(modern ? modernTrack : invoiceId), paymentUrl: modern ? modernPaymentUrl : paymentUrl, amountRial: finalAmountRial, expiresAt: data?.expires_at || null, mode };
+  return { trackId: String(modern ? modernTrack : invoiceId), paymentUrl: modern ? modernPaymentUrl : paymentUrl, amountRial: finalAmountRial, expiresAt: data?.expires_at || null, cardNumber: String(data?.card_number || config.card_number || '').replace(/\D/g, ''), accountHolder: String(config.account_holder || '') , mode };
 }
 
 export async function verifyBluePalPayment(config: BluePalConfig, trackId: string, expectedAmount: number) {
