@@ -13,14 +13,21 @@ const sectionPaths: Record<string, string> = { dashboard: '/dashboard', users: '
 const pathSections = Object.fromEntries(Object.entries(sectionPaths).map(([section, path]) => [path, section])) as Record<string, string>;
 function sectionFromPath(pathname: string) { return pathSections[pathname.replace(/\/$/, '')] || 'dashboard'; }
 
-class ApiError extends Error {
-  constructor(public status: number) { super('دریافت اطلاعات با خطا مواجه شد.'); }
-}
-
 async function api<T>(url: string, token: string, signal?: AbortSignal): Promise<T> {
   const response = await fetch(url, { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store', signal });
-  if (!response.ok) throw new ApiError(response.status);
-  return response.json();
+  const result = await readApiResponse<T>(response);
+  if (!response.ok) throw new Error((result as any)?.message || `خطای سرور (HTTP ${response.status})`);
+  return result;
+}
+
+async function readApiResponse<T>(response: Response): Promise<T> {
+  const body = await response.text();
+  if (!body) return {} as T;
+  try { return JSON.parse(body) as T; }
+  catch {
+    const detail = body.replace(/\s+/g, ' ').trim().slice(0, 180);
+    throw new Error(`پاسخ API معتبر نیست (HTTP ${response.status})${detail ? `: ${detail}` : ''}`);
+  }
 }
 
 function Login({ onLogin }: { onLogin: (token: string, username: string) => void }) {
@@ -62,7 +69,7 @@ function BluePalSettingsView({ token, onNotify }: { token: string; onNotify: (te
     event.preventDefault(); setSaving(true); setError(''); setTestResult(null);
     try {
       const response = await fetch('/api/payment/bluepal/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ ...config, apiKey, clearApiKey, webhookSecret, clearWebhookSecret }) });
-      const result = await response.json(); if (!response.ok) throw new Error(result.message || 'ذخیره تنظیمات انجام نشد.');
+      const result = await readApiResponse<BluePalConfig & { message?: string }>(response); if (!response.ok) throw new Error(result.message || `ذخیره تنظیمات انجام نشد (HTTP ${response.status}).`);
       setConfig(result); setApiKey(''); setClearApiKey(false); setWebhookSecret(''); setClearWebhookSecret(false); onNotify('تنظیمات بلوپال ذخیره شد.');
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'ذخیره تنظیمات انجام نشد.'); }
     finally { setSaving(false); }
