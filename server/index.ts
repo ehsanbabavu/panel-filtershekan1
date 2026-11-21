@@ -5,6 +5,7 @@ import { initializeDatabase, pool } from './database.js';
 import { createMobileHandler, handleMobileRequest, settleMobileBluePalPayment } from './mobile.js';
 import { selectUsers } from './presence.js';
 import { handleBluePalAdminRequest } from './bluepal.js';
+import { getMaintenanceMode, setMaintenanceMode } from './serviceControl.js';
 
 const app = express();
 const port = Number(process.env.PORT || 3001);
@@ -106,6 +107,19 @@ app.get('/api/transactions', async (_req, res, next) => {
       p.payment_url AS "paymentUrl",p.created_at AS "createdAt",p.paid_at AS "paidAt"
       FROM bluepal_payments p JOIN users u ON u.id=p.user_id ORDER BY p.created_at DESC LIMIT 500`);
     res.json(result.rows);
+  } catch (error) { next(error); }
+});
+
+app.get('/api/service-status', async (_req, res, next) => {
+  try { res.json({ maintenanceMode: await getMaintenanceMode(pool) }); }
+  catch (error) { next(error); }
+});
+
+app.put('/api/service-status', async (req, res, next) => {
+  try {
+    const maintenanceMode = req.body?.maintenanceMode;
+    if (typeof maintenanceMode !== 'boolean') return res.status(400).json({ message: 'وضعیت سرویس معتبر نیست.' });
+    res.json(await setMaintenanceMode(pool, maintenanceMode));
   } catch (error) { next(error); }
 });
 

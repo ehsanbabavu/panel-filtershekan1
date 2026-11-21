@@ -5,6 +5,7 @@ import { selectUsers, type MobileDatabase } from '../server/presence.js';
 import { handleBluePalAdminRequest } from '../server/bluepal.js';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { settleMobileBluePalPayment } from '../server/mobile.js';
+import { getMaintenanceMode, setMaintenanceMode } from '../server/serviceControl.js';
 
 function reply(res: any, status: number, data: unknown) {
   res.status(status).json(data);
@@ -80,6 +81,16 @@ return async function handler(req: any, res: any) {
 
     const bluePalHandled = await handleBluePalAdminRequest(pathname, method, req, res, database);
     if (bluePalHandled !== null) return bluePalHandled;
+
+    if (pathname === '/api/service-status' && method === 'GET') {
+      return reply(res, 200, { maintenanceMode: await getMaintenanceMode(database) });
+    }
+
+    if (pathname === '/api/service-status' && method === 'PUT') {
+      const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
+      if (typeof body.maintenanceMode !== 'boolean') return reply(res, 400, { message: 'وضعیت سرویس معتبر نیست.' });
+      return reply(res, 200, await setMaintenanceMode(database, body.maintenanceMode));
+    }
 
     if (pathname === '/api/transactions' && method === 'GET') {
       const result = await database.query(`SELECT p.id,p.public_id AS "paymentId",u.name AS "userName",u.username,

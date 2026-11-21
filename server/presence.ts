@@ -33,6 +33,8 @@ export async function reportPresence(database: MobileDatabase, token: string, co
   const client = await database.connect();
   try {
     await client.query('BEGIN');
+    const service = await client.query<any>('SELECT maintenance_mode FROM service_settings WHERE id=1 FOR SHARE');
+    const maintenanceMode = Boolean(service.rows[0]?.maintenance_mode);
     const session = await client.query<any>(
       `SELECT s.user_id, s.device_id, s.vpn_sequence, u.name, u.username, u.plan, u.blocked,
         COALESCE((SELECT p.simultaneous_devices FROM subscription_plans p WHERE p.name=u.plan),1) AS simultaneous_device_limit,
@@ -76,7 +78,15 @@ export async function reportPresence(database: MobileDatabase, token: string, co
     }
     if (stale) {
       await client.query('COMMIT');
+      if (connected && maintenanceMode) return { authorized: true, applied: false, denied: true, serviceDisabled: true,
+        subscription: { ...subscriptionOf(row), canConnect: false, maintenanceMode: true } };
       return { authorized: true, applied: false, subscription: subscriptionOf(row) };
+    }
+    if (connected && maintenanceMode) {
+      await client.query(`UPDATE app_user_sessions SET vpn_connected=FALSE,vpn_heartbeat_at=NULL,vpn_sequence=$2 WHERE token=$1`, [token, sequence]);
+      await client.query('COMMIT');
+      return { authorized: true, applied: false, denied: true, serviceDisabled: true,
+        subscription: { ...subscriptionOf(row), canConnect: false, maintenanceMode: true } };
     }
     const active = Boolean(row.subscription_time_active);
     if (connected && (row.blocked || !active || used >= quota)) {

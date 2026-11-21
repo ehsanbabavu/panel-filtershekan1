@@ -19,3 +19,5 @@
 .sidebar{height:100dvh;max-height:100dvh;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin}.sidebar nav{flex:none}.sidebar-bottom{flex:none}
 
 .sidebar-brand-logo{width:42px;height:42px;flex:none;object-fit:cover;border:1px solid #e6eaf1;border-radius:12px;background:#fff;box-shadow:0 4px 12px #28324b12}
+
+.service-control{display:flex;align-items:center;gap:6px;margin:14px 1px 12px;padding:10px 8px;border:1px solid #e9e7f6;border-radius:11px;background:#faf9ff}.service-control>div{flex:1;min-width:0}.service-control>div b,.service-control>div small{display:block}.service-control>div b{font-size:9px;color:#58586d;white-space:nowrap}.service-control>div small{margin-top:4px;color:#9999a8;font-size:8px;line-height:1.4}.service-control .access-switch{min-width:80px;padding:5px 7px 5px 5px;font-size:8px}.service-control.is-maintenance{border-color:#f2d7d8;background:#fff8f7}.service-control.is-maintenance>div b{color:#b6454a}

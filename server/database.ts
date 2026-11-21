@@ -39,6 +39,11 @@ export async function initializeSchema(database: Pick<Pool, 'query'>) {
     ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS sender_role TEXT NOT NULL DEFAULT 'admin' CHECK (sender_role IN ('admin','user'));
     ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS read_by_admin BOOLEAN NOT NULL DEFAULT FALSE;
     CREATE INDEX IF NOT EXISTS chat_messages_user_created_idx ON chat_messages(user_id,created_at);
+    CREATE TABLE IF NOT EXISTS service_settings (
+      id INTEGER PRIMARY KEY CHECK (id=1), maintenance_mode BOOLEAN NOT NULL DEFAULT FALSE,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    INSERT INTO service_settings(id,maintenance_mode) VALUES(1,FALSE) ON CONFLICT(id) DO NOTHING;
     CREATE TABLE IF NOT EXISTS proxy_settings (
       id INTEGER PRIMARY KEY CHECK (id = 1), host TEXT NOT NULL, port INTEGER NOT NULL CHECK (port BETWEEN 1 AND 65535),
       username TEXT NOT NULL DEFAULT '', password TEXT NOT NULL DEFAULT '', updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()

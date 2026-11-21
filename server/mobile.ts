@@ -327,11 +327,12 @@ export async function handleMobileRequest(action: string, req: any, res: any, da
   if (action === 'proxy' && method === 'GET') {
     if (!token) return reply(res, 401, { message: 'برای دریافت پروکسی وارد حساب شوید.' });
     const access = await database.query<any>(`SELECT u.blocked,u.subscription_expires_at,(u.subscription_expires_at>NOW()) AS subscription_time_active,
-      u.subscription_quota_bytes,u.subscription_used_bytes
+      u.subscription_quota_bytes,u.subscription_used_bytes,(SELECT maintenance_mode FROM service_settings WHERE id=1) AS maintenance_mode
       FROM app_user_sessions s JOIN users u ON u.id=s.user_id
       WHERE s.token=$1 AND (s.expires_at IS NULL OR s.expires_at>NOW())`, [token]);
     if (!access.rows[0]) return reply(res, 401, { message: 'نشست شما منقضی شده است.' });
     const user = access.rows[0];
+    if (user.maintenance_mode) return reply(res, 503, { maintenanceMode: true, message: 'سرویس فیلترشکن برای به‌روزرسانی موقتاً متوقف است.' });
     if (user.blocked || !user.subscription_time_active || BigInt(user.subscription_used_bytes || 0) >= BigInt(user.subscription_quota_bytes || 0)) {
       return reply(res, 403, { message: 'برای دریافت پروکسی به اشتراک فعال نیاز دارید.' });
     }
@@ -345,17 +346,18 @@ export async function handleMobileRequest(action: string, req: any, res: any, da
       COALESCE((SELECT p.simultaneous_devices FROM subscription_plans p WHERE p.name=u.plan),1) AS simultaneous_device_limit,
       u.subscription_started_at,
       u.subscription_expires_at,(u.subscription_expires_at>NOW()) AS subscription_time_active,
-      u.subscription_quota_bytes,u.subscription_used_bytes
+      u.subscription_quota_bytes,u.subscription_used_bytes,(SELECT maintenance_mode FROM service_settings WHERE id=1) AS maintenance_mode
       FROM app_user_sessions s JOIN users u ON u.id=s.user_id
       WHERE s.token=$1 AND (s.expires_at IS NULL OR s.expires_at>NOW())`, [token]);
     if (!result.rows[0]) return reply(res, 401, { message: 'نشست شما منقضی شده است.' });
     const row=result.rows[0], quota=BigInt(row.subscription_quota_bytes||0), used=BigInt(row.subscription_used_bytes||0);
     const timeActive=Boolean(row.subscription_time_active);
-    const canConnect=Boolean(!row.blocked&&timeActive&&used<quota);
+    const maintenanceMode=Boolean(row.maintenance_mode);
+    const canConnect=Boolean(!maintenanceMode&&!row.blocked&&timeActive&&used<quota);
     return reply(res,200,{id:row.user_id,name:row.name,username:row.username,plan:row.plan,
       subscriptionStartedAt:row.subscription_started_at,subscriptionExpiresAt:row.subscription_expires_at,
       subscriptionQuotaBytes:quota.toString(),subscriptionUsedBytes:used.toString(),blocked:Boolean(row.blocked),simultaneousDevices:Number(row.simultaneous_device_limit||1),
-      subscriptionTimeActive:timeActive,canConnect,exhausted:used>=quota,serverNow:new Date().toISOString()});
+      subscriptionTimeActive:timeActive,maintenanceMode,canConnect,exhausted:used>=quota,serverNow:new Date().toISOString()});
   }
   if (action === 'presence' && method === 'POST') {
     if (!token) return reply(res, 401, { message: 'برای ادامه وارد شوید.' });
@@ -369,6 +371,7 @@ export async function handleMobileRequest(action: string, req: any, res: any, da
     if (!result.authorized) return reply(res, 401, { message: 'نشست شما منقضی شده است.' });
     if (result.denied) return reply(res,403,{...result.subscription,message:result.deviceLimitExceeded
       ? `حداکثر ${result.deviceLimit} دستگاه می‌تواند هم‌زمان متصل باشد.`
+      : result.serviceDisabled?'سرویس فیلترشکن برای به‌روزرسانی موقتاً متوقف است.'
       : result.subscription?.blocked?'دسترسی این حساب توسط مدیر مسدود شده است.':'حجم یا مهلت اشتراک تمام شده است.'});
     if (result.subscription) return reply(res,200,{...result.subscription,success:true,applied:result.applied});
     return reply(res, 200, { success: true, applied: result.applied });
@@ -379,6 +382,7 @@ export async function handleMobileRequest(action: string, req: any, res: any, da
     const client = await database.connect();
     try {
       await client.query('BEGIN');
+      const service = await client.query<any>('SELECT maintenance_mode FROM service_settings WHERE id=1 FOR SHARE');
       const session = await client.query<any>(`SELECT s.user_id,s.device_id,u.blocked,u.plan,
         COALESCE((SELECT p.simultaneous_devices FROM subscription_plans p WHERE p.name=u.plan),1) AS simultaneous_device_limit,
         u.subscription_started_at,u.subscription_expires_at,(u.subscription_expires_at>NOW()) AS subscription_time_active,
@@ -387,6 +391,11 @@ export async function handleMobileRequest(action: string, req: any, res: any, da
         WHERE s.token=$1 AND (s.expires_at IS NULL OR s.expires_at>NOW()) FOR UPDATE OF s,u`, [token]);
       const row = session.rows[0];
       if (!row) { await client.query('ROLLBACK'); return reply(res, 401, { message: 'نشست شما منقضی شده است.' }); }
+      if (Boolean(service.rows[0]?.maintenance_mode)) {
+        await client.query('UPDATE app_user_sessions SET vpn_connected=FALSE,vpn_heartbeat_at=NULL WHERE token=$1', [token]);
+        await client.query('COMMIT');
+        return reply(res, 503, { maintenanceMode: true, canConnect: false, message: 'سرویس فیلترشکن برای به‌روزرسانی موقتاً متوقف است.' });
+      }
       const used = BigInt(row.subscription_used_bytes || 0), quota = BigInt(row.subscription_quota_bytes || 0);
       const timeActive = Boolean(row.subscription_time_active);
       if (row.blocked || !timeActive || used >= quota) {

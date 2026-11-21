@@ -132,6 +132,7 @@ function App() {
   const [token, setToken] = useState(() => sessionStorage.getItem('fs-token') || ''); const [admin, setAdmin] = useState(() => sessionStorage.getItem('fs-user') || 'ehsan');
   const [section, setSection] = useState(() => sectionFromPath(window.location.pathname)); const [users, setUsers] = useState<User[]>([]); const [plans, setPlans] = useState<any[]>([]); const [userSubscriptions, setUserSubscriptions] = useState<UserSubscription[]>([]); const [subscriptionBusy, setSubscriptionBusy] = useState<string[]>([]); const [subscriptionLoading, setSubscriptionLoading] = useState(false); const [subscriptionLoadError, setSubscriptionLoadError] = useState(''); const [conversations, setConversations] = useState<Conversation[]>([]); const [chatLoadError, setChatLoadError] = useState(''); const [unreadChatCount, setUnreadChatCount] = useState(0); const [selectedChatUserId, setSelectedChatUserId] = useState(''); const [search, setSearch] = useState(''); const [mobileMenu, setMobileMenu] = useState(false); const [messages, setMessages] = useState<Message[]>([]); const [draft, setDraft] = useState(''); const [toast, setToast] = useState(''); const [loading, setLoading] = useState(false);
   const [dashboardStats, setDashboardStats] = useState<DashboardStats>({ monthRevenueToman: '0', successfulPayments: 0 });
+  const [serviceMaintenance, setServiceMaintenance] = useState(false); const [serviceBusy, setServiceBusy] = useState(false); const [serviceStatusLoading, setServiceStatusLoading] = useState(true);
   useEffect(() => {
     const syncRoute = () => { const next = sectionFromPath(window.location.pathname); setSection(next); if (window.location.pathname !== sectionPaths[next]) window.history.replaceState({}, '', sectionPaths[next]); };
     window.addEventListener('popstate', syncRoute);
@@ -175,6 +176,15 @@ function App() {
       .then(result => { if (!stopped) setDashboardStats({ monthRevenueToman: String(result.monthRevenueToman || '0'), successfulPayments: Number(result.successfulPayments) || 0 }); })
       .catch(() => {});
     void refresh(); const timer = window.setInterval(refresh, 10000);
+    return () => { stopped = true; window.clearInterval(timer); controller.abort(); };
+  }, [token]);
+  useEffect(() => {
+    if (!token) { setServiceStatusLoading(false); return; }
+    const controller = new AbortController(); let stopped = false;
+    const refresh = () => api<{ maintenanceMode: boolean }>('/api/service-status', token, controller.signal)
+      .then(result => { if (!stopped) { setServiceMaintenance(Boolean(result.maintenanceMode)); setServiceStatusLoading(false); } })
+      .catch(() => {});
+    setServiceStatusLoading(true); void refresh(); const timer = window.setInterval(refresh, 10000);
     return () => { stopped = true; window.clearInterval(timer); controller.abort(); };
   }, [token]);
   useEffect(() => {
@@ -259,6 +269,21 @@ function App() {
     finally { setSubscriptionBusy(current => current.filter(id => id !== subscription.userId)); }
   };
   const sendMessage = async (event: React.FormEvent) => { event.preventDefault(); if (!draft.trim() || !selectedChatUserId) return; try { const response = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ userId: Number(selectedChatUserId), message: draft }) }); const message = await response.json(); if (!response.ok) throw new Error(message.message || 'ارسال پیام انجام نشد.'); setMessages(current => [...current, { ...message, id: String(message.id), userId: String(message.userId), senderRole: 'admin', time: new Date(message.time).toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' }) }]); setDraft(''); } catch (error) { notify(error instanceof Error ? error.message : 'ارسال پیام انجام نشد.'); } };
+  const toggleServiceMaintenance = async () => {
+    if (serviceBusy || serviceStatusLoading) return;
+    const maintenanceMode = !serviceMaintenance; setServiceBusy(true);
+    try {
+      const response = await fetch('/api/service-status', { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ maintenanceMode }) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.message || 'تغییر وضعیت سرویس انجام نشد.');
+      setServiceMaintenance(Boolean(result.maintenanceMode));
+      if (result.changed) notify(maintenanceMode
+        ? `سرویس متوقف شد؛ پیام عذرخواهی برای ${Number(result.notifiedUsers || 0).toLocaleString('fa-IR')} کاربر ارسال شد.`
+        : `سرویس دوباره فعال شد؛ پیام اطلاع‌رسانی برای ${Number(result.notifiedUsers || 0).toLocaleString('fa-IR')} کاربر ارسال شد.`);
+      else notify(maintenanceMode ? 'سرویس از قبل متوقف بود.' : 'سرویس از قبل فعال بود.');
+    } catch (error) { notify(error instanceof Error ? error.message : 'تغییر وضعیت سرویس انجام نشد.'); }
+    finally { setServiceBusy(false); }
+  };
   if (!token) return <Login onLogin={login}/>;
   const revenueAmount = Number(dashboardStats.monthRevenueToman) || 0;
   const revenueLabel = revenueAmount >= 1000000
@@ -268,6 +293,7 @@ function App() {
   const title = ({ dashboard: 'داشبورد', users: 'کاربران', plans: 'پلن‌ها', subscriptions: 'اشتراک‌ها', transactions: 'لیست تراکنش‌ها', socks: 'ساکس', chat: 'چت و پشتیبانی', gateway: 'درگاه بلوپال' } as Record<string, string>)[section];
   return <div className="app-shell"><aside className={`sidebar ${mobileMenu ? 'sidebar-open' : ''}`} aria-label="منوی پنل"><div className="brand"><img className="sidebar-brand-logo" src="/aria-logo.png" alt="لوگوی فیلترشکن آریا"/><div><b>پنل مدیریت آریا</b></div><button type="button" className="icon-btn close-menu" aria-label="بستن منوی پنل" onClick={() => setMobileMenu(false)}><X size={19}/></button></div>
     <div className="nav-caption">منوی اصلی</div><nav aria-label="صفحات پنل">{nav.map(item => <button type="button" key={item.id} className={`nav-item ${section === item.id ? 'active' : ''}`} aria-current={section === item.id ? 'page' : undefined} onClick={() => { navigateTo(item.id); setMobileMenu(false); }}><item.icon size={19}/><span>{item.label}</span>{item.count !== undefined && item.count > 0 && <small>{item.count}</small>}</button>)}</nav>
+    <section className={`service-control ${serviceMaintenance ? 'is-maintenance' : ''}`} aria-label="وضعیت سرویس فیلترشکن"><div><b>خاموش‌کردن سرویس‌ها</b><small>{serviceStatusLoading ? 'در حال دریافت وضعیت سرویس' : serviceMaintenance ? 'اتصال کاربران متوقف است' : 'سرویس برای کاربران فعال است'}</small></div><button type="button" role="switch" aria-checked={serviceMaintenance} aria-label={serviceMaintenance ? 'فعال‌سازی دوباره سرویس‌ها' : 'خاموش‌کردن سرویس‌ها'} className={`access-switch ${serviceMaintenance ? 'is-blocked' : ''}`} disabled={serviceBusy || serviceStatusLoading} onClick={toggleServiceMaintenance}><span/><b>{serviceBusy || serviceStatusLoading ? '...' : serviceMaintenance ? 'خاموش' : 'فعال'}</b></button></section>
     <div className="sidebar-bottom"><div className="profile"><div className="avatar admin-avatar">ا</div><div className="profile-info"><b>{admin}</b><span>مدیر کل</span></div><button className="icon-btn" title="خروج" onClick={logout}><LogOut size={17}/></button></div></div>
   </aside><div className={`mobile-scrim ${mobileMenu ? 'show' : ''}`} onClick={() => setMobileMenu(false)}/>
   <main className="main-area"><header className="topbar"><div className="topbar-left"><button type="button" className="icon-btn mobile-trigger" aria-label="باز کردن منوی پنل" aria-expanded={mobileMenu} onClick={() => setMobileMenu(true)}><Menu size={21}/></button><div className="breadcrumb">صفحات <span>/</span> <b>{title}</b></div></div><div className="topbar-actions"><div className="status-pill"><i/> همه سیستم‌ها فعال</div><button className="icon-btn notification" onClick={() => notify('اعلان جدیدی ندارید.')}><Bell size={19}/><i/></button><div className="top-divider"/><div className="top-profile"><div className="avatar admin-avatar">ا</div><div><b>{admin}</b><span>مدیر سیستم</span></div><ChevronDown size={15}/></div></div></header>
