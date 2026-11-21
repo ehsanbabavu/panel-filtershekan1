@@ -74,8 +74,11 @@ async function settleBluePalPayment(database: MobileDatabase, paymentId: string)
   const expectedRial = Number(payment.amount_rial) || Number(payment.amount_toman) * 10;
   const verification = await verifyBluePalPayment(config, payment.track_id, expectedRial);
   if (!verification.paid) {
-    const localDeadlinePassed = payment.expires_at && Date.now() >= new Date(payment.expires_at).getTime();
-    const status = verification.reason === 'expired' || localDeadlinePassed ? 'expired' : ['failed', 'canceled', 'cancelled'].includes(verification.reason || '') ? 'failed' : 'pending';
+    const localDeadline = payment.expires_at ? new Date(payment.expires_at).getTime() : new Date(payment.created_at).getTime() + 10 * 60 * 1000;
+    const localDeadlinePassed = Number.isFinite(localDeadline) && Date.now() >= localDeadline;
+    // Provider responses can report an unpaid invoice as expired before its app-side
+    // payment window ends. Keep the fresh invoice pending until our recorded deadline.
+    const status = localDeadlinePassed ? 'expired' : ['failed', 'canceled', 'cancelled'].includes(verification.reason || '') ? 'failed' : 'pending';
     if (status === 'pending') return { paid: false, payment: paymentRow(payment) };
     const update = await database.query<any>("UPDATE bluepal_payments SET status=$2,updated_at=NOW() WHERE public_id=$1 AND status='pending' RETURNING *", [paymentId, status]);
     return { paid: false, payment: paymentRow(update.rows[0] || payment) };
