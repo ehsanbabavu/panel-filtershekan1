@@ -91,7 +91,8 @@ async function requestBluePalInvoice(config: BluePalConfig, args: { amountToman:
     throw new Error(String(data?.message || data?.error || `پاسخ بلوپال معتبر نبود (HTTP ${response.status}).`).slice(0, 500));
   }
   const finalAmountRial = modern ? amountRial : (Number(data?.final_amount) || Number(data?.amount) || amountRial);
-  return { trackId: String(modern ? modernTrack : invoiceId), paymentUrl: modern ? modernPaymentUrl : paymentUrl, amountRial: finalAmountRial, expiresAt: data?.expires_at || null };
+  const mode = String(data?.mode || (/^blu_test_/i.test(config.api_key) ? 'sandbox' : /^blu_live_/i.test(config.api_key) ? 'live' : 'unknown')).toLowerCase();
+  return { trackId: String(modern ? modernTrack : invoiceId), paymentUrl: modern ? modernPaymentUrl : paymentUrl, amountRial: finalAmountRial, expiresAt: data?.expires_at || null, mode };
 }
 
 export async function verifyBluePalPayment(config: BluePalConfig, trackId: string, expectedAmount: number) {
@@ -177,10 +178,17 @@ export async function handleBluePalAdminRequest(pathname: string, method: string
     if (!config.api_key) {
       return send(res, 400, { message: 'ابتدا کلید API بلوپال را وارد کنید.' });
     }
+    if (!/bluepal\.ir/i.test(config.base_url) && /^blu_test_/i.test(config.api_key)) {
+      return send(res, 400, { success: false, mode: 'sandbox', message: 'کلید ذخیره‌شده آزمایشی است و فاکتور Sandbox می‌سازد. برای ساخت فاکتور واقعی، کلید Live با پیشوند blu_live_ را در تنظیمات وارد و ذخیره کنید.' });
+    }
     try {
       const invoice = await requestBluePalInvoice(config, { amountToman: 10000, callbackUrl: '', description: 'تست اتصال درگاه فیلترشکن' });
+      if (invoice.mode === 'sandbox') {
+        return send(res, 409, { success: false, mode: invoice.mode, trackId: invoice.trackId, paymentUrl: invoice.paymentUrl,
+          message: 'بلوپال با کلید آزمایشی فاکتور Sandbox ساخت. برای حالت واقعی، کلید Live را در تنظیمات ذخیره کنید.' });
+      }
       return send(res, 200, { success: true, trackId: invoice.trackId, paymentUrl: invoice.paymentUrl,
-        message: `فاکتور تست واقعی با موفقیت ساخته شد؛ شناسه ${invoice.trackId} — مبلغ حداقل درگاه ۱۰٬۰۰۰ تومان.` });
+        message: `${invoice.mode === 'live' ? 'فاکتور واقعی' : 'فاکتور'} با موفقیت ساخته شد؛ شناسه ${invoice.trackId} — مبلغ حداقل درگاه ۱۰٬۰۰۰ تومان.` });
     } catch (error: any) {
       return send(res, 502, { success: false, message: String(error?.message || 'ارتباط با بلوپال ناموفق بود.').slice(0, 500) });
     }
