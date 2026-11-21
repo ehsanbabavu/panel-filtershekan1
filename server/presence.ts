@@ -116,7 +116,7 @@ export async function reportPresence(database: MobileDatabase, token: string, co
   }
 }
 
-function subscriptionOf(row: any) {
+export function subscriptionOf(row: any) {
   const quota = BigInt(row.subscription_quota_bytes || 0), used = BigInt(row.subscription_used_bytes || 0);
   const timeActive = Boolean(row.subscription_time_active);
   const canConnect = Boolean(!row.blocked && timeActive && used < quota);
