@@ -3,6 +3,8 @@ import { initializeDatabase, pool } from '../server/database.js';
 import { handleMobileRequest } from '../server/mobile.js';
 import { selectUsers, type MobileDatabase } from '../server/presence.js';
 import { handleBluePalAdminRequest } from '../server/bluepal.js';
+import { createHmac, timingSafeEqual } from 'node:crypto';
+import { settleMobileBluePalPayment } from '../server/mobile.js';
 
 function reply(res: any, status: number, data: unknown) {
   res.status(status).json(data);
@@ -24,6 +26,25 @@ return async function handler(req: any, res: any) {
     if (pathname === '/api/health' && method === 'GET') {
       await database.query('SELECT 1');
       return reply(res, 200, { status: 'ok', database: 'connected' });
+    }
+
+    if (pathname === '/api/payment/bluepal/webhook' && method === 'POST') {
+      const settings = await database.query<any>('SELECT webhook_secret FROM bluepal_settings WHERE id=1');
+      const secret = String(settings.rows[0]?.webhook_secret || '');
+      if (secret) {
+        const supplied = String(req.headers?.['x-blupal-signature'] || req.headers?.['x-webhook-signature'] || '');
+        const raw = String(req.rawBody || JSON.stringify(typeof req.body === 'string' ? JSON.parse(req.body) : req.body || {}));
+        const expected = createHmac('sha256', secret).update(raw).digest('hex');
+        const left = Buffer.from(supplied), right = Buffer.from(expected);
+        if (left.length !== right.length || !timingSafeEqual(left, right)) return reply(res, 401, { success: false, message: 'امضای وب‌هوک معتبر نیست.' });
+      }
+      const body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body || {};
+      const invoiceId = String(body.invoice_id ?? body.id ?? body.track_id ?? '');
+      if (!invoiceId) return reply(res, 400, { success: false, message: 'شناسه فاکتور در وب‌هوک موجود نیست.' });
+      const found = await database.query<any>('SELECT public_id FROM bluepal_payments WHERE track_id=$1', [invoiceId]);
+      if (!found.rows[0]) return reply(res, 200, { success: true, received: true, matched: false });
+      const settled = await settleMobileBluePalPayment(database, String(found.rows[0].public_id));
+      return reply(res, settled.paid ? 200 : 202, { success: true, received: true, matched: true, payment: settled.paid ? 'paid' : 'pending-verification' });
     }
 
     if (pathname.startsWith('/api/mobile/')) {

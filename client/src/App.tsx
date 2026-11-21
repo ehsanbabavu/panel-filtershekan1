@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Activity, ArrowDownLeft, ArrowUpLeft, Bell, Check, ChevronDown, CircleHelp, Command, CreditCard, ExternalLink, KeyRound, LayoutDashboard, LogOut, Menu, MessageCircle, MoreHorizontal, Pencil, Plus, RefreshCw, Save, Search, Send, ShieldCheck, Trash2, Users, Wifi, X } from 'lucide-react';
+import { Activity, AlertCircle, ArrowDownLeft, ArrowUpLeft, Bell, Check, CheckCircle2, ChevronDown, CircleHelp, Command, Copy, CreditCard, ExternalLink, Key, KeyRound, LayoutDashboard, LogOut, Menu, MessageCircle, MoreHorizontal, Pencil, Plus, RefreshCw, Save, Search, Send, ShieldCheck, Trash2, Users, Wifi, X } from 'lucide-react';
 import './gateway.css';
 
 type User = { id: string; name: string; username: string; status: string; plan: string; lastSeen: string; blocked?: boolean; subscriptionStartedAt?: string; subscriptionExpiresAt?: string; subscriptionQuotaBytes?: string; subscriptionUsedBytes?: string };
@@ -42,12 +42,15 @@ function Login({ onLogin }: { onLogin: (token: string, username: string) => void
   </section><div className="login-copy">فیلترشکن <span>•</span> مدیریت ساده‌تر، ارتباط مطمئن‌تر</div></main>;
 }
 
-type BluePalConfig = { merchantId: string; baseUrl: string; customEndpoint: string; enabled: boolean; apiKeyConfigured: boolean; updatedAt?: string | null };
+type BluePalConfig = { merchantId: string; baseUrl: string; customEndpoint: string; cardNumber: string; accountHolder: string; iban: string; webhookSecretConfigured: boolean; customWebhookUrl: string; enabled: boolean; apiKeyConfigured: boolean; updatedAt?: string | null };
 function BluePalSettingsView({ token, onNotify }: { token: string; onNotify: (text: string) => void }) {
-  const [config, setConfig] = useState<BluePalConfig>({ merchantId: '', baseUrl: 'https://blupal.top', customEndpoint: '/api/v1/invoices/create', enabled: false, apiKeyConfigured: false });
-  const [apiKey, setApiKey] = useState(''); const [clearApiKey, setClearApiKey] = useState(false);
+  const [config, setConfig] = useState<BluePalConfig>({ merchantId: '', baseUrl: 'https://blupal.top', customEndpoint: '/api/v1/invoices/create', cardNumber: '', accountHolder: '', iban: '', webhookSecretConfigured: false, customWebhookUrl: '', enabled: false, apiKeyConfigured: false });
+  const [apiKey, setApiKey] = useState(''); const [clearApiKey, setClearApiKey] = useState(false); const [webhookSecret, setWebhookSecret] = useState(''); const [clearWebhookSecret, setClearWebhookSecret] = useState(false);
   const [loading, setLoading] = useState(true); const [saving, setSaving] = useState(false); const [testing, setTesting] = useState(false);
-  const [error, setError] = useState(''); const [testResult, setTestResult] = useState<{ message: string; paymentUrl?: string } | null>(null);
+  const [error, setError] = useState(''); const [testResult, setTestResult] = useState<{ success: boolean; message: string; paymentUrl?: string } | null>(null);
+  const [copiedWebhookUrl, setCopiedWebhookUrl] = useState(false);
+  const systemWebhookUrl = `${window.location.origin}/api/payment/bluepal/webhook`;
+  const activeWebhookUrl = config.customWebhookUrl.trim() || systemWebhookUrl;
   useEffect(() => {
     const controller = new AbortController();
     api<BluePalConfig>('/api/payment/bluepal/settings', token, controller.signal).then(setConfig)
@@ -58,35 +61,40 @@ function BluePalSettingsView({ token, onNotify }: { token: string; onNotify: (te
   const save = async (event: React.FormEvent) => {
     event.preventDefault(); setSaving(true); setError(''); setTestResult(null);
     try {
-      const response = await fetch('/api/payment/bluepal/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ ...config, apiKey, clearApiKey }) });
+      const response = await fetch('/api/payment/bluepal/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ ...config, apiKey, clearApiKey, webhookSecret, clearWebhookSecret }) });
       const result = await response.json(); if (!response.ok) throw new Error(result.message || 'ذخیره تنظیمات انجام نشد.');
-      setConfig(result); setApiKey(''); setClearApiKey(false); onNotify('تنظیمات بلوپال ذخیره شد.');
+      setConfig(result); setApiKey(''); setClearApiKey(false); setWebhookSecret(''); setClearWebhookSecret(false); onNotify('تنظیمات بلوپال ذخیره شد.');
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'ذخیره تنظیمات انجام نشد.'); }
     finally { setSaving(false); }
   };
   const test = async () => {
     setTesting(true); setError(''); setTestResult(null);
     try {
-      const response = await fetch('/api/payment/bluepal/test', { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
-      const result = await response.json(); if (!response.ok) throw new Error(result.message || 'تست اتصال انجام نشد.');
-      setTestResult({ message: result.message, paymentUrl: result.paymentUrl });
-    } catch (reason) { setError(reason instanceof Error ? reason.message : 'تست اتصال انجام نشد.'); }
+      const response = await fetch('/api/payment/bluepal/test', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ ...config, apiKey, enabled: config.enabled }) });
+      const result = await response.json();
+      setTestResult({ success: response.ok && Boolean(result.success), message: result.message || 'پاسخی از وب‌سرویس بلوپال دریافت نشد.', paymentUrl: result.paymentUrl });
+    } catch (reason) { setTestResult({ success: false, message: reason instanceof Error ? reason.message : 'تست اتصال انجام نشد.' }); }
     finally { setTesting(false); }
   };
-  return <section className="panel full-panel gateway-settings"><div className="panel-head"><div><h2>تنظیمات درگاه بلوپال</h2><p>کلید پذیرنده به‌صورت محرمانه در پایگاه داده ذخیره می‌شود و در پاسخ‌های پنل نمایش داده نمی‌شود.</p></div><span className={`gateway-status ${config.enabled && config.apiKeyConfigured ? 'is-ready' : ''}`}><i/>{config.enabled && config.apiKeyConfigured ? 'فعال' : config.enabled ? 'کلید ثبت نشده' : 'غیرفعال'}</span></div>
+  const copyWebhookUrl = async () => { try { await navigator.clipboard.writeText(activeWebhookUrl); setCopiedWebhookUrl(true); window.setTimeout(() => setCopiedWebhookUrl(false), 2000); } catch { setCopiedWebhookUrl(false); } };
+  return <section className="panel full-panel gateway-settings"><div className="panel-head"><div><h2>تنظیمات درگاه بلوپال</h2><p>مشخصات API، اطلاعات کارت و تنظیمات وب‌هوک بلوپال.</p></div><span className={`gateway-status ${config.enabled && config.apiKeyConfigured ? 'is-ready' : ''}`}><i/>{config.enabled && config.apiKeyConfigured ? 'فعال' : config.enabled ? 'کلید ثبت نشده' : 'غیرفعال'}</span></div>
     {loading ? <div className="gateway-loading">در حال دریافت تنظیمات...</div> : <form className="gateway-form" onSubmit={save}>
       <label className="gateway-switch"><span><b>فعال‌سازی درگاه</b><small>این وضعیت برای درگاه‌های متصل به API قابل استفاده خواهد بود.</small></span><button type="button" role="switch" aria-checked={config.enabled} className={`access-switch ${config.enabled ? '' : 'is-blocked'}`} onClick={() => setConfig(current => ({ ...current, enabled: !current.enabled }))}><span/><b>{config.enabled ? 'فعال' : 'خاموش'}</b></button></label>
       <div className="gateway-grid">
-        <label>نشانی پایه بلوپال<input dir="ltr" type="text" required value={config.baseUrl} onChange={event => setConfig(current => ({ ...current, baseUrl: event.target.value }))} placeholder="https://blupal.top"/><small>مقدار پیش‌فرض پروژهٔ مرجع: https://blupal.top</small></label>
-        <label>مسیر صدور فاکتور<input dir="ltr" type="text" required value={config.customEndpoint} onChange={event => setConfig(current => ({ ...current, customEndpoint: event.target.value }))} placeholder="/api/v1/invoices/create"/><small>از تنظیمات پروژه photo-laleh قابل تطبیق است.</small></label>
+        <label className="gateway-key-field">کلید دسترسی وب‌سرویس / توکن API بلوپال<input dir="ltr" type="password" autoComplete="new-password" value={apiKey} onChange={event => { setApiKey(event.target.value); setClearApiKey(false); }} placeholder={config.apiKeyConfigured ? 'کلید ذخیره شده؛ برای تعویض، کلید تازه وارد کنید' : 'توکن API بلوپال'}/><small>{config.apiKeyConfigured && !clearApiKey ? 'کلید فعلی محفوظ است و برای نگه‌داشتن آن این فیلد را خالی بگذارید.' : 'کلید فقط در سرور نگهداری می‌شود.'}</small></label>
+        <label>نشانی پایه بلوپال<input dir="ltr" type="text" required value={config.baseUrl} onChange={event => setConfig(current => ({ ...current, baseUrl: event.target.value }))} placeholder="https://blupal.top"/></label>
+        <label>مسیر صدور فاکتور سفارشی<input dir="ltr" type="text" required value={config.customEndpoint} onChange={event => setConfig(current => ({ ...current, customEndpoint: event.target.value }))} placeholder="/api/v1/invoices/create"/></label>
         {/bluepal\.ir/i.test(config.baseUrl) && <label>شناسه پذیرنده (Merchant ID)<input dir="ltr" autoComplete="off" required value={config.merchantId} onChange={event => setConfig(current => ({ ...current, merchantId: event.target.value }))} placeholder="شناسه پذیرنده BluePal"/></label>}
-        <label className="gateway-key-field">کلید API بلوپال<input dir="ltr" type="password" autoComplete="new-password" value={apiKey} onChange={event => { setApiKey(event.target.value); setClearApiKey(false); }} placeholder={config.apiKeyConfigured ? 'کلید ذخیره شده؛ برای تعویض، کلید تازه وارد کنید' : 'کلید API از پنل پذیرنده بلوپال'}/><small>{config.apiKeyConfigured && !clearApiKey ? 'کلید فعلی محفوظ است و برای نگه‌داشتن آن این فیلد را خالی بگذارید.' : 'کلید فقط در سرور نگهداری می‌شود.'}</small></label>
+        <label><span className="gateway-field-title"><CreditCard size={14}/> شماره کارت (۱۶ رقم)</span><input dir="ltr" inputMode="numeric" value={config.cardNumber} onChange={event => setConfig(current => ({ ...current, cardNumber: event.target.value }))} placeholder="شماره کارت ثبت‌شده در بلوپال"/></label>
+        <label><span className="gateway-field-title"><Users size={14}/> نام و نام خانوادگی صاحب حساب</span><input value={config.accountHolder} onChange={event => setConfig(current => ({ ...current, accountHolder: event.target.value }))} placeholder="نام صاحب حساب"/></label>
+        <label>شماره شبا<input dir="ltr" value={config.iban} onChange={event => setConfig(current => ({ ...current, iban: event.target.value }))} placeholder="IR…"/></label>
       </div>
       {config.apiKeyConfigured && <button type="button" className="gateway-clear-key" onClick={() => { setClearApiKey(value => !value); setApiKey(''); }}>{clearApiKey ? 'لغو حذف کلید' : 'حذف کلید ذخیره‌شده'}</button>}
+      <div className="gateway-webhook"><div><h3>آدرس وب‌هوک دریافت نتیجه پرداخت</h3><p>این آدرس را در بخش تنظیمات وب‌هوک پنل پذیرنده بلوپال وارد کنید.</p></div><div className="gateway-webhook-copy"><input type="url" readOnly dir="ltr" value={activeWebhookUrl}/><button type="button" className="soft-btn" onClick={copyWebhookUrl}>{copiedWebhookUrl ? <Check size={15}/> : <Copy size={15}/>} {copiedWebhookUrl ? 'کپی شد' : 'کپی آدرس'}</button></div><div className="gateway-grid"><label>آدرس وب‌هوک سفارشی (اختیاری)<input type="url" dir="ltr" value={config.customWebhookUrl} onChange={event => setConfig(current => ({ ...current, customWebhookUrl: event.target.value }))} placeholder="https://example.com/api/blupal/webhook"/><small>اگر خالی بماند آدرس سایت به‌صورت خودکار استفاده می‌شود.</small></label><label>کلید امضای وب‌هوک (اختیاری)<input type="password" dir="ltr" autoComplete="new-password" value={webhookSecret} onChange={event => { setWebhookSecret(event.target.value); setClearWebhookSecret(false); }} placeholder={config.webhookSecretConfigured ? 'کلید ذخیره شده؛ برای تعویض مقدار تازه وارد کنید' : 'کلید امضای وب‌هوک'}/><small>{config.webhookSecretConfigured && !clearWebhookSecret ? 'کلید فعلی محفوظ است؛ برای نگه‌داشتن آن فیلد را خالی بگذارید.' : 'در صورت تنظیم secret در پنل بلوپال وارد کنید.'}</small></label></div>{config.webhookSecretConfigured && <button type="button" className="gateway-clear-key" onClick={() => { setClearWebhookSecret(value => !value); setWebhookSecret(''); }}>{clearWebhookSecret ? 'لغو حذف secret' : 'حذف secret ذخیره‌شده'}</button>}</div>
       {error && <div className="user-form-error" role="alert">{error}</div>}
-      {testResult && <div className="gateway-test-result"><Check size={17}/><span>{testResult.message}</span>{testResult.paymentUrl && <a href={testResult.paymentUrl} target="_blank" rel="noopener noreferrer">مشاهده درخواست <ExternalLink size={14}/></a>}</div>}
-      <div className="gateway-actions"><button className="primary-btn" disabled={saving}>{saving ? <RefreshCw size={16} className="spin"/> : <Save size={16}/>} {saving ? 'در حال ذخیره...' : 'ذخیره تنظیمات'}</button><button type="button" className="soft-btn" disabled={testing || !config.apiKeyConfigured} onClick={test}>{testing ? <RefreshCw size={16} className="spin"/> : <KeyRound size={16}/>} تست اتصال</button></div>
-      <p className="gateway-warning">سازگار با قرارداد پروژهٔ photo-laleh: ارسال مبلغ به ریال با هدر X-API-Key. تست اتصال حداقل فاکتور درگاه، یعنی ۱۰٬۰۰۰ تومان، ایجاد می‌کند؛ با کلید اصلی، پرداخت آن تراکنش واقعی خواهد بود.</p>
+      {testResult && <div className={`gateway-test-result ${testResult.success ? 'is-success' : 'is-error'}`}>{testResult.success ? <CheckCircle2 size={17}/> : <AlertCircle size={17}/>}<span>{testResult.message}</span>{testResult.paymentUrl && <a href={testResult.paymentUrl} target="_blank" rel="noopener noreferrer">مشاهده درگاه <ExternalLink size={14}/></a>}</div>}
+      <div className="gateway-actions"><button className="primary-btn" disabled={saving}>{saving ? <RefreshCw size={16} className="spin"/> : <Save size={16}/>} {saving ? 'در حال ذخیره...' : 'ذخیره تنظیمات بلوپال'}</button><button type="button" className="soft-btn" disabled={testing || (!config.apiKeyConfigured && !apiKey.trim())} onClick={test}>{testing ? <RefreshCw size={16} className="spin"/> : <KeyRound size={16}/>} ثبت صدور فاکتور واقعی</button></div>
+      <p className="gateway-warning">تست اتصال مانند پروژهٔ photo-laleh یک فاکتور واقعی به مبلغ حداقل مجاز بلوپال می‌سازد (۱۰٬۰۰۰ تومان). با کلید اصلی، پرداخت آن تراکنش واقعی خواهد بود.</p>
     </form>}
   </section>;
 }

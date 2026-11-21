@@ -1,6 +1,6 @@
 type Database = { query: (sql: string, values?: unknown[]) => Promise<any> };
 
-export type BluePalConfig = { api_key: string; merchant_id: string; base_url: string; custom_endpoint: string; enabled: boolean };
+export type BluePalConfig = { api_key: string; merchant_id: string; base_url: string; custom_endpoint: string; card_number?: string; enabled: boolean };
 
 function send(res: any, status: number, body: unknown) {
   return res.status(status).json(body);
@@ -41,7 +41,7 @@ function createInvoiceUrl(config: BluePalConfig) {
 }
 
 export async function readBluePalConfig(database: Database): Promise<BluePalConfig | null> {
-  const result = await database.query('SELECT api_key,merchant_id,base_url,custom_endpoint,enabled FROM bluepal_settings WHERE id=1');
+  const result = await database.query('SELECT api_key,merchant_id,base_url,custom_endpoint,card_number,account_holder,iban,webhook_secret,custom_webhook_url,enabled FROM bluepal_settings WHERE id=1');
   return (result.rows[0] as BluePalConfig | undefined) || null;
 }
 
@@ -60,15 +60,18 @@ export async function requestBluePalPayment(config: BluePalConfig, args: { amoun
 }
 
 async function requestBluePalInvoice(config: BluePalConfig, amount: number) {
-  if (!config.enabled || !config.api_key) throw new Error('درگاه بلوپال در پنل تنظیم یا فعال نشده است.');
+  if (!config.api_key) throw new Error('کلید API بلوپال وارد نشده است.');
   const isModern = /bluepal\.ir/i.test(config.base_url);
   if (isModern && !config.merchant_id) throw new Error('شناسه Merchant ID در تنظیمات وارد نشده است.');
   const endpoint = createInvoiceUrl(config);
   const modern = isModern;
+  const cardNumber = String(config.card_number || '').replace(/\D/g, '');
   const response = await fetch(endpoint, {
     method: 'POST',
     headers: { ...(modern ? { Authorization: `Bearer ${config.api_key}` } : { 'X-API-Key': config.api_key }), Accept: 'application/json', 'Content-Type': 'application/json' },
-    body: JSON.stringify(modern ? { merchant_id: config.merchant_id, amount: Math.round(amount / 10), callback_url: '', description: 'خرید اشتراک فیلترشکن' } : { amount }),
+    body: JSON.stringify(modern
+      ? { merchant_id: config.merchant_id, amount: Math.round(amount / 10), callback_url: '', description: 'خرید اشتراک فیلترشکن' }
+      : { amount, ...(cardNumber ? { card_number: cardNumber } : {}) }),
     signal: AbortSignal.timeout(20000),
   });
   const raw = await response.text();
@@ -89,7 +92,8 @@ async function requestBluePalInvoice(config: BluePalConfig, amount: number) {
 export async function verifyBluePalPayment(config: BluePalConfig, trackId: string, expectedAmount: number) {
   if (!config.enabled || !config.api_key) throw new Error('درگاه بلوپال در دسترس نیست.');
   const modern = /bluepal\.ir/i.test(config.base_url);
-  const response = await fetch(modern ? `${apiBase(config.base_url)}/api/v1/payments/verify/${encodeURIComponent(trackId)}` : `${apiBase(config.base_url)}/v1/invoices/${encodeURIComponent(trackId)}`, {
+  const modernRoot = (validBaseUrl(config.base_url) || 'https://www.bluepal.ir').replace(/\/api$/i, '');
+  const response = await fetch(modern ? `${modernRoot}/api/v1/payments/verify/${encodeURIComponent(trackId)}` : `${apiBase(config.base_url)}/v1/invoices/${encodeURIComponent(trackId)}`, {
     headers: { ...(modern ? { Authorization: `Bearer ${config.api_key}` } : { 'X-API-Key': config.api_key }), Accept: 'application/json' },
     signal: AbortSignal.timeout(15000),
   });
@@ -106,10 +110,11 @@ export async function verifyBluePalPayment(config: BluePalConfig, trackId: strin
 }
 
 async function readConfig(database: Database) {
-  const result = await database.query(`SELECT merchant_id AS "merchantId",base_url AS "baseUrl",custom_endpoint AS "customEndpoint",enabled,
+  const result = await database.query(`SELECT merchant_id AS "merchantId",base_url AS "baseUrl",custom_endpoint AS "customEndpoint",
+    card_number AS "cardNumber",account_holder AS "accountHolder",iban,webhook_secret AS "webhookSecret",custom_webhook_url AS "customWebhookUrl",enabled,
     (api_key <> '') AS "apiKeyConfigured",updated_at AS "updatedAt" FROM bluepal_settings WHERE id=1`);
   return result.rows[0] || {
-    merchantId: '', baseUrl: 'https://blupal.top', customEndpoint: '/api/v1/invoices/create', enabled: false, apiKeyConfigured: false, updatedAt: null,
+    merchantId: '', baseUrl: 'https://blupal.top', customEndpoint: '/api/v1/invoices/create', cardNumber: '', accountHolder: '', iban: '', webhookSecret: '', customWebhookUrl: '', enabled: false, apiKeyConfigured: false, updatedAt: null,
   };
 }
 
@@ -124,28 +129,47 @@ export async function handleBluePalAdminRequest(pathname: string, method: string
     const apiKey = typeof body.apiKey === 'string' ? body.apiKey.trim() : '';
     const baseUrl = validBaseUrl(body.baseUrl);
     const customEndpoint = typeof body.customEndpoint === 'string' ? body.customEndpoint.trim() : '/api/v1/invoices/create';
+    const cardNumber = typeof body.cardNumber === 'string' ? body.cardNumber.trim() : '';
+    const accountHolder = typeof body.accountHolder === 'string' ? body.accountHolder.trim() : '';
+    const iban = typeof body.iban === 'string' ? body.iban.trim() : '';
+    const webhookSecret = typeof body.webhookSecret === 'string' ? body.webhookSecret.trim() : '';
+    const customWebhookUrl = typeof body.customWebhookUrl === 'string' ? body.customWebhookUrl.trim() : '';
     if (merchantId.length > 200 || apiKey.length > 1024 || !baseUrl || customEndpoint.length > 500 || typeof body.enabled !== 'boolean' ||
-      (body.clearApiKey !== undefined && typeof body.clearApiKey !== 'boolean')) {
+      cardNumber.length > 64 || accountHolder.length > 200 || iban.length > 64 || webhookSecret.length > 1024 || customWebhookUrl.length > 2048 ||
+      (customWebhookUrl && !/^https:\/\//i.test(customWebhookUrl)) || (body.clearApiKey !== undefined && typeof body.clearApiKey !== 'boolean')) {
       return send(res, 400, { message: 'شناسه پذیرنده، کلید API یا نشانی HTTPS بلوپال معتبر نیست.' });
     }
     if (/bluepal\.ir/i.test(baseUrl) && !merchantId) return send(res, 400, { message: 'برای درگاه BluePal شناسه Merchant ID هم لازم است.' });
     try { createInvoiceUrl({ api_key: '', merchant_id: '', base_url: baseUrl, custom_endpoint: customEndpoint, enabled: true }); }
     catch (error: any) { return send(res, 400, { message: String(error?.message || 'مسیر فاکتور بلوپال معتبر نیست.') }); }
-    const saved = await database.query(`INSERT INTO bluepal_settings(id,api_key,merchant_id,base_url,custom_endpoint,enabled)
-      VALUES(1,CASE WHEN $6 THEN '' ELSE $1 END,$2,$3,$4,$5)
+    const saved = await database.query(`INSERT INTO bluepal_settings(id,api_key,merchant_id,base_url,custom_endpoint,card_number,account_holder,iban,webhook_secret,custom_webhook_url,enabled)
+      VALUES(1,CASE WHEN $11 THEN '' ELSE $1 END,$2,$3,$4,$5,$6,$7,$8,$9,$10)
       ON CONFLICT(id) DO UPDATE SET
-        api_key=CASE WHEN $6 THEN '' WHEN $1<>'' THEN $1 ELSE bluepal_settings.api_key END,
-        merchant_id=EXCLUDED.merchant_id,base_url=EXCLUDED.base_url,custom_endpoint=EXCLUDED.custom_endpoint,enabled=EXCLUDED.enabled,updated_at=NOW()
-      RETURNING merchant_id AS "merchantId",base_url AS "baseUrl",custom_endpoint AS "customEndpoint",enabled,(api_key<>'') AS "apiKeyConfigured",updated_at AS "updatedAt"`,
-    [apiKey, merchantId, baseUrl, customEndpoint, body.enabled, body.clearApiKey === true]);
+        api_key=CASE WHEN $11 THEN '' WHEN $1<>'' THEN $1 ELSE bluepal_settings.api_key END,
+        merchant_id=EXCLUDED.merchant_id,base_url=EXCLUDED.base_url,custom_endpoint=EXCLUDED.custom_endpoint,card_number=EXCLUDED.card_number,
+        account_holder=EXCLUDED.account_holder,iban=EXCLUDED.iban,webhook_secret=CASE WHEN $12 THEN '' WHEN $8<>'' THEN $8 ELSE bluepal_settings.webhook_secret END,
+        custom_webhook_url=EXCLUDED.custom_webhook_url,enabled=EXCLUDED.enabled,updated_at=NOW()
+      RETURNING merchant_id AS "merchantId",base_url AS "baseUrl",custom_endpoint AS "customEndpoint",card_number AS "cardNumber",
+        account_holder AS "accountHolder",iban,custom_webhook_url AS "customWebhookUrl",(webhook_secret<>'') AS "webhookSecretConfigured",
+        enabled,(api_key<>'') AS "apiKeyConfigured",updated_at AS "updatedAt"`,
+    [apiKey, merchantId, baseUrl, customEndpoint, cardNumber, accountHolder, iban, webhookSecret, customWebhookUrl, body.enabled, body.clearApiKey === true, body.clearWebhookSecret === true]);
     return send(res, 200, saved.rows[0]);
   }
 
   if (pathname === '/api/payment/bluepal/test' && method === 'POST') {
-    const result = await database.query('SELECT api_key,merchant_id,base_url,custom_endpoint,enabled FROM bluepal_settings WHERE id=1');
-    const config = result.rows[0];
-    if (!config?.api_key || !config?.enabled) {
-      return send(res, 400, { message: 'ابتدا کلید API بلوپال را ذخیره و درگاه را فعال کنید.' });
+    const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
+    const storedResult = await database.query('SELECT api_key,merchant_id,base_url,custom_endpoint,enabled FROM bluepal_settings WHERE id=1');
+    const stored = storedResult.rows[0] || {};
+    const config = {
+      ...stored,
+      api_key: String(body.apiKey || stored.api_key || '').trim(),
+      merchant_id: String(body.merchantId || stored.merchant_id || '').trim(),
+      base_url: String(body.baseUrl || stored.base_url || 'https://blupal.top').trim(),
+      custom_endpoint: String(body.customEndpoint || stored.custom_endpoint || '/api/v1/invoices/create').trim(),
+      enabled: body.enabled === undefined ? stored.enabled : body.enabled === true,
+    };
+    if (!config.api_key) {
+      return send(res, 400, { message: 'ابتدا کلید API بلوپال را وارد کنید.' });
     }
     try {
       const invoice = await requestBluePalInvoice(config, 100000);

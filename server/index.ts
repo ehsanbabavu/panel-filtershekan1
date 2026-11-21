@@ -1,7 +1,8 @@
 import express from 'express';
 import bcrypt from 'bcryptjs';
+import { createHmac, timingSafeEqual } from 'node:crypto';
 import { initializeDatabase, pool } from './database.js';
-import { createMobileHandler, handleMobileRequest } from './mobile.js';
+import { createMobileHandler, handleMobileRequest, settleMobileBluePalPayment } from './mobile.js';
 import { selectUsers } from './presence.js';
 import { handleBluePalAdminRequest } from './bluepal.js';
 
@@ -9,7 +10,7 @@ const app = express();
 const port = Number(process.env.PORT || 3001);
 export { initializeDatabase } from './database.js';
 
-app.use(express.json());
+app.use(express.json({ verify: (req: any, _res, buffer) => { req.rawBody = buffer.toString('utf8'); } }));
 app.all(['/api/mobile', '/api/mobile/:action'], createMobileHandler(pool, initializeDatabase));
 app.get('/api/mobile', async (req, res, next) => {
   try {
@@ -28,6 +29,32 @@ app.get('/api/health', async (_req, res) => {
     console.error('Health check failed:', error);
     res.status(503).json({ status: 'error', message: 'اتصال پایگاه داده برقرار نیست.' });
   }
+});
+
+app.post('/api/payment/bluepal/webhook', async (req, res, next) => {
+  try {
+    await initializeDatabase();
+    const result = await pool.query<any>('SELECT webhook_secret FROM bluepal_settings WHERE id=1');
+    const secret = String(result.rows[0]?.webhook_secret || '');
+    if (secret) {
+      const supplied = String(req.headers['x-blupal-signature'] || req.headers['x-webhook-signature'] || '');
+      const raw = String((req as any).rawBody || JSON.stringify(req.body || {}));
+      const expected = createHmac('sha256', secret).update(raw).digest('hex');
+      const left = Buffer.from(supplied), right = Buffer.from(expected);
+      if (left.length !== right.length || !timingSafeEqual(left, right)) return res.status(401).json({ success: false, message: 'امضای وب‌هوک معتبر نیست.' });
+    }
+    const body = req.body || {};
+    const invoiceId = String(body.invoice_id ?? body.id ?? body.track_id ?? '');
+    const status = String(body.status || '').toLowerCase();
+    if (!invoiceId) return res.status(400).json({ success: false, message: 'شناسه فاکتور در وب‌هوک موجود نیست.' });
+    if (['paid','success','successful','completed'].includes(status)) {
+      const payment = await pool.query<any>('SELECT public_id FROM bluepal_payments WHERE track_id=$1', [invoiceId]);
+      if (!payment.rows[0]) return res.status(200).json({ success: true, received: true, matched: false });
+      const settled = await settleMobileBluePalPayment(pool, String(payment.rows[0].public_id));
+      return res.status(settled.paid ? 200 : 202).json({ success: true, received: true, matched: true, payment: settled.paid ? 'paid' : 'pending-verification' });
+    }
+    return res.status(200).json({ success: true, received: true });
+  } catch (error) { next(error); }
 });
 
 app.post('/api/login', async (req, res, next) => {

@@ -70,6 +70,10 @@ async function settleBluePalPayment(database: MobileDatabase, paymentId: string)
   return activatePaidPayment(database, paymentId, verification.reference || payment.track_id);
 }
 
+export async function settleMobileBluePalPayment(database: MobileDatabase, paymentId: string) {
+  return settleBluePalPayment(database, paymentId);
+}
+
 function paymentReturnPage(paid: boolean) {
   const title = paid ? 'پرداخت تایید شد' : 'در انتظار تایید پرداخت';
   const message = paid ? 'اشتراک شما فعال شد. به اپلیکیشن برگردید.' : 'وضعیت پرداخت هنوز نهایی نشده است. اپلیکیشن را باز کنید تا وضعیت دوباره بررسی شود.';

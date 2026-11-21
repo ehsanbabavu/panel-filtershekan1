@@ -49,10 +49,17 @@ export async function initializeSchema(database: Pick<Pool, 'query'>) {
       merchant_id TEXT NOT NULL DEFAULT '',
       base_url TEXT NOT NULL DEFAULT 'https://blupal.top',
       custom_endpoint TEXT NOT NULL DEFAULT '/api/v1/invoices/create',
+      card_number TEXT NOT NULL DEFAULT '', account_holder TEXT NOT NULL DEFAULT '', iban TEXT NOT NULL DEFAULT '',
+      webhook_secret TEXT NOT NULL DEFAULT '', custom_webhook_url TEXT NOT NULL DEFAULT '',
       enabled BOOLEAN NOT NULL DEFAULT FALSE,
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
     ALTER TABLE bluepal_settings ADD COLUMN IF NOT EXISTS custom_endpoint TEXT NOT NULL DEFAULT '/api/v1/invoices/create';
+    ALTER TABLE bluepal_settings ADD COLUMN IF NOT EXISTS card_number TEXT NOT NULL DEFAULT '';
+    ALTER TABLE bluepal_settings ADD COLUMN IF NOT EXISTS account_holder TEXT NOT NULL DEFAULT '';
+    ALTER TABLE bluepal_settings ADD COLUMN IF NOT EXISTS iban TEXT NOT NULL DEFAULT '';
+    ALTER TABLE bluepal_settings ADD COLUMN IF NOT EXISTS webhook_secret TEXT NOT NULL DEFAULT '';
+    ALTER TABLE bluepal_settings ADD COLUMN IF NOT EXISTS custom_webhook_url TEXT NOT NULL DEFAULT '';
     UPDATE bluepal_settings SET base_url='https://blupal.top',custom_endpoint='/api/v1/invoices/create',merchant_id=''
       WHERE base_url IN ('https://www.bluepal.ir','https://bluepal.ir') AND custom_endpoint='/api/v1/invoices/create';
     CREATE TABLE IF NOT EXISTS proxy_servers (
