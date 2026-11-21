@@ -28,6 +28,9 @@ function apiBase(value: unknown) {
 function createInvoiceUrl(config: BluePalConfig) {
   const base = apiBase(config.base_url);
   const custom = String(config.custom_endpoint || '').trim();
+  if (/bluepal\.ir/i.test(config.base_url) && (!custom || custom === '/api/v1/invoices/create' || custom === '/v1/invoices/create')) {
+    return `${base}/v1/payments/request`;
+  }
   if (!custom || custom === '/api/v1/invoices/create' || custom === '/v1/invoices/create') return `${base}/v1/invoices/create`;
   if (/^https:\/\//i.test(custom)) {
     const url = new URL(custom);
@@ -54,24 +57,26 @@ function configuredPaymentUrl(value: unknown) {
 
 export async function requestBluePalPayment(config: BluePalConfig, args: { amount: number; callbackUrl: string; description: string }) {
   if (!config.enabled || !config.api_key) throw new Error('درگاه بلوپال در پنل تنظیم یا فعال نشده است.');
-  const amount = Math.round(args.amount * 10);
-  if (amount < 100000 || amount > 500000000) throw new Error('مبلغ پلن باید بین ۱۰٬۰۰۰ و ۵۰٬۰۰۰٬۰۰۰ تومان باشد.');
-  return requestBluePalInvoice(config, amount);
+  const amountToman = Number(args.amount);
+  if (!Number.isSafeInteger(amountToman) || amountToman < 10000 || amountToman > 50000000) throw new Error('مبلغ پلن باید بین ۱۰٬۰۰۰ و ۵۰٬۰۰۰٬۰۰۰ تومان باشد.');
+  return requestBluePalInvoice(config, { amountToman, callbackUrl: args.callbackUrl, description: args.description });
 }
 
-async function requestBluePalInvoice(config: BluePalConfig, amount: number) {
+async function requestBluePalInvoice(config: BluePalConfig, args: { amountToman: number; callbackUrl?: string; description?: string }) {
   if (!config.api_key) throw new Error('کلید API بلوپال وارد نشده است.');
   const isModern = /bluepal\.ir/i.test(config.base_url);
   if (isModern && !config.merchant_id) throw new Error('شناسه Merchant ID در تنظیمات وارد نشده است.');
   const endpoint = createInvoiceUrl(config);
   const modern = isModern;
+  const amountToman = args.amountToman;
+  const amountRial = amountToman * 10;
   const cardNumber = String(config.card_number || '').replace(/\D/g, '');
   const response = await fetch(endpoint, {
     method: 'POST',
     headers: { ...(modern ? { Authorization: `Bearer ${config.api_key}` } : { 'X-API-Key': config.api_key }), Accept: 'application/json', 'Content-Type': 'application/json' },
     body: JSON.stringify(modern
-      ? { merchant_id: config.merchant_id, amount: Math.round(amount / 10), callback_url: '', description: 'خرید اشتراک فیلترشکن' }
-      : { amount, ...(cardNumber ? { card_number: cardNumber } : {}) }),
+      ? { merchant_id: config.merchant_id, amount: amountToman, callback_url: args.callbackUrl || '', description: args.description || 'خرید اشتراک فیلترشکن' }
+      : { amount: amountRial, ...(cardNumber ? { card_number: cardNumber } : {}) }),
     signal: AbortSignal.timeout(20000),
   });
   const raw = await response.text();
@@ -85,7 +90,7 @@ async function requestBluePalInvoice(config: BluePalConfig, amount: number) {
   if (!response.ok || payload?.success === false || (modern ? (!modernTrack || !modernPaymentUrl) : (invoiceId === undefined || invoiceId === null || !paymentUrl))) {
     throw new Error(String(data?.message || data?.error || `پاسخ بلوپال معتبر نبود (HTTP ${response.status}).`).slice(0, 500));
   }
-  const finalAmountRial = Number(data?.final_amount) || (modern ? Math.round(Number(data?.amount ?? amount / 10) * 10) : Number(data?.amount)) || amount;
+  const finalAmountRial = modern ? amountRial : (Number(data?.final_amount) || Number(data?.amount) || amountRial);
   return { trackId: String(modern ? modernTrack : invoiceId), paymentUrl: modern ? modernPaymentUrl : paymentUrl, amountRial: finalAmountRial, expiresAt: data?.expires_at || null };
 }
 
@@ -104,9 +109,10 @@ export async function verifyBluePalPayment(config: BluePalConfig, trackId: strin
   const status = String(data?.status || '').toLowerCase();
   const paid = response.ok && (modern ? [100, 201].includes(Number(data?.result)) && status === 'success' : payload?.success !== false && ['paid', 'completed', 'successful', 'success'].includes(status));
   if (!paid) return { paid: false, reason: status || String(data?.message || data?.error || 'pending') };
-  const amount = Number(data?.final_amount ?? data?.amount);
-  if (!Number.isSafeInteger(amount) || amount !== expectedAmount) throw new Error('مبلغ تاییدشده با مبلغ فاکتور تطابق ندارد.');
-  return { paid: true, reference: String(data?.ref_id || data?.reference_id || data?.transaction_id || trackId), amount };
+  const providerAmount = Number(data?.final_amount ?? data?.amount);
+  const amountRial = modern ? providerAmount * 10 : providerAmount;
+  if (!Number.isSafeInteger(amountRial) || amountRial !== expectedAmount) throw new Error('مبلغ تاییدشده با مبلغ فاکتور تطابق ندارد.');
+  return { paid: true, reference: String(data?.ref_id || data?.reference_id || data?.transaction_id || trackId), amount: amountRial };
 }
 
 async function readConfig(database: Database) {
@@ -172,7 +178,7 @@ export async function handleBluePalAdminRequest(pathname: string, method: string
       return send(res, 400, { message: 'ابتدا کلید API بلوپال را وارد کنید.' });
     }
     try {
-      const invoice = await requestBluePalInvoice(config, 100000);
+      const invoice = await requestBluePalInvoice(config, { amountToman: 10000, callbackUrl: '', description: 'تست اتصال درگاه فیلترشکن' });
       return send(res, 200, { success: true, trackId: invoice.trackId, paymentUrl: invoice.paymentUrl,
         message: `فاکتور تست واقعی با موفقیت ساخته شد؛ شناسه ${invoice.trackId} — مبلغ حداقل درگاه ۱۰٬۰۰۰ تومان.` });
     } catch (error: any) {
