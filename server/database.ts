@@ -104,6 +104,7 @@ export async function initializeSchema(database: Pick<Pool, 'query'>) {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), paid_at TIMESTAMPTZ
     );
     ALTER TABLE bluepal_payments ADD COLUMN IF NOT EXISTS amount_rial BIGINT NOT NULL DEFAULT 0;
+    ALTER TABLE bluepal_payments ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;
     UPDATE bluepal_payments SET amount_rial=amount_toman*10 WHERE amount_rial=0 AND amount_toman>0;
     CREATE INDEX IF NOT EXISTS bluepal_payments_user_created_idx ON bluepal_payments(user_id,created_at DESC);
     CREATE TABLE IF NOT EXISTS mobile_usage_reports (
