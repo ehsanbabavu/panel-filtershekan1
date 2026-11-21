@@ -42,9 +42,9 @@ function Login({ onLogin }: { onLogin: (token: string, username: string) => void
   </section><div className="login-copy">فیلترشکن <span>•</span> مدیریت ساده‌تر، ارتباط مطمئن‌تر</div></main>;
 }
 
-type BluePalConfig = { merchantId: string; baseUrl: string; enabled: boolean; apiKeyConfigured: boolean; updatedAt?: string | null };
+type BluePalConfig = { merchantId: string; baseUrl: string; customEndpoint: string; enabled: boolean; apiKeyConfigured: boolean; updatedAt?: string | null };
 function BluePalSettingsView({ token, onNotify }: { token: string; onNotify: (text: string) => void }) {
-  const [config, setConfig] = useState<BluePalConfig>({ merchantId: '', baseUrl: 'https://www.bluepal.ir', enabled: false, apiKeyConfigured: false });
+  const [config, setConfig] = useState<BluePalConfig>({ merchantId: '', baseUrl: 'https://blupal.top', customEndpoint: '/api/v1/invoices/create', enabled: false, apiKeyConfigured: false });
   const [apiKey, setApiKey] = useState(''); const [clearApiKey, setClearApiKey] = useState(false);
   const [loading, setLoading] = useState(true); const [saving, setSaving] = useState(false); const [testing, setTesting] = useState(false);
   const [error, setError] = useState(''); const [testResult, setTestResult] = useState<{ message: string; paymentUrl?: string } | null>(null);
@@ -76,15 +76,17 @@ function BluePalSettingsView({ token, onNotify }: { token: string; onNotify: (te
   return <section className="panel full-panel gateway-settings"><div className="panel-head"><div><h2>تنظیمات درگاه بلوپال</h2><p>کلید پذیرنده به‌صورت محرمانه در پایگاه داده ذخیره می‌شود و در پاسخ‌های پنل نمایش داده نمی‌شود.</p></div><span className={`gateway-status ${config.enabled && config.apiKeyConfigured ? 'is-ready' : ''}`}><i/>{config.enabled && config.apiKeyConfigured ? 'فعال' : config.enabled ? 'کلید ثبت نشده' : 'غیرفعال'}</span></div>
     {loading ? <div className="gateway-loading">در حال دریافت تنظیمات...</div> : <form className="gateway-form" onSubmit={save}>
       <label className="gateway-switch"><span><b>فعال‌سازی درگاه</b><small>این وضعیت برای درگاه‌های متصل به API قابل استفاده خواهد بود.</small></span><button type="button" role="switch" aria-checked={config.enabled} className={`access-switch ${config.enabled ? '' : 'is-blocked'}`} onClick={() => setConfig(current => ({ ...current, enabled: !current.enabled }))}><span/><b>{config.enabled ? 'فعال' : 'خاموش'}</b></button></label>
-      <div className="gateway-grid"><label>شناسه پذیرنده (Merchant ID)<input dir="ltr" autoComplete="off" required value={config.merchantId} onChange={event => setConfig(current => ({ ...current, merchantId: event.target.value }))} placeholder="شناسه پذیرنده در پنل بلوپال"/></label>
-        <label>نشانی سرویس<input dir="ltr" type="url" required value={config.baseUrl} onChange={event => setConfig(current => ({ ...current, baseUrl: event.target.value }))} placeholder="https://www.bluepal.ir"/><small>نشانی امن رسمی: https://www.bluepal.ir</small></label>
+      <div className="gateway-grid">
+        <label>نشانی پایه بلوپال<input dir="ltr" type="text" required value={config.baseUrl} onChange={event => setConfig(current => ({ ...current, baseUrl: event.target.value }))} placeholder="https://blupal.top"/><small>مقدار پیش‌فرض پروژهٔ مرجع: https://blupal.top</small></label>
+        <label>مسیر صدور فاکتور<input dir="ltr" type="text" required value={config.customEndpoint} onChange={event => setConfig(current => ({ ...current, customEndpoint: event.target.value }))} placeholder="/api/v1/invoices/create"/><small>از تنظیمات پروژه photo-laleh قابل تطبیق است.</small></label>
+        {/bluepal\.ir/i.test(config.baseUrl) && <label>شناسه پذیرنده (Merchant ID)<input dir="ltr" autoComplete="off" required value={config.merchantId} onChange={event => setConfig(current => ({ ...current, merchantId: event.target.value }))} placeholder="شناسه پذیرنده BluePal"/></label>}
         <label className="gateway-key-field">کلید API بلوپال<input dir="ltr" type="password" autoComplete="new-password" value={apiKey} onChange={event => { setApiKey(event.target.value); setClearApiKey(false); }} placeholder={config.apiKeyConfigured ? 'کلید ذخیره شده؛ برای تعویض، کلید تازه وارد کنید' : 'کلید API از پنل پذیرنده بلوپال'}/><small>{config.apiKeyConfigured && !clearApiKey ? 'کلید فعلی محفوظ است و برای نگه‌داشتن آن این فیلد را خالی بگذارید.' : 'کلید فقط در سرور نگهداری می‌شود.'}</small></label>
       </div>
       {config.apiKeyConfigured && <button type="button" className="gateway-clear-key" onClick={() => { setClearApiKey(value => !value); setApiKey(''); }}>{clearApiKey ? 'لغو حذف کلید' : 'حذف کلید ذخیره‌شده'}</button>}
       {error && <div className="user-form-error" role="alert">{error}</div>}
       {testResult && <div className="gateway-test-result"><Check size={17}/><span>{testResult.message}</span>{testResult.paymentUrl && <a href={testResult.paymentUrl} target="_blank" rel="noopener noreferrer">مشاهده درخواست <ExternalLink size={14}/></a>}</div>}
       <div className="gateway-actions"><button className="primary-btn" disabled={saving}>{saving ? <RefreshCw size={16} className="spin"/> : <Save size={16}/>} {saving ? 'در حال ذخیره...' : 'ذخیره تنظیمات'}</button><button type="button" className="soft-btn" disabled={testing || !config.apiKeyConfigured} onClick={test}>{testing ? <RefreshCw size={16} className="spin"/> : <KeyRound size={16}/>} تست اتصال</button></div>
-      <p className="gateway-warning">تست اتصال یک درخواست پرداخت ۱٬۰۰۰ تومانی می‌سازد. با کلید اصلی، اگر این درخواست پرداخت شود تراکنش واقعی خواهد بود؛ برای آزمایش از کلید Sandbox استفاده کنید.</p>
+      <p className="gateway-warning">سازگار با قرارداد پروژهٔ photo-laleh: ارسال مبلغ به ریال با هدر X-API-Key. تست اتصال حداقل فاکتور درگاه، یعنی ۱۰٬۰۰۰ تومان، ایجاد می‌کند؛ با کلید اصلی، پرداخت آن تراکنش واقعی خواهد بود.</p>
     </form>}
   </section>;
 }

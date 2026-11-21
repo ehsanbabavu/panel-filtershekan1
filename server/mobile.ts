@@ -59,7 +59,8 @@ async function settleBluePalPayment(database: MobileDatabase, paymentId: string)
   if (!payment.track_id) return { paid: false, payment: paymentRow(payment) };
   const config = await readBluePalConfig(database);
   if (!config) throw new Error('درگاه بلوپال تنظیم نشده است.');
-  const verification = await verifyBluePalPayment(config, payment.track_id, Number(payment.amount_toman));
+  const expectedRial = Number(payment.amount_rial) || Number(payment.amount_toman) * 10;
+  const verification = await verifyBluePalPayment(config, payment.track_id, expectedRial);
   if (!verification.paid) {
     const status = verification.reason === 'expired' ? 'expired' : ['failed', 'canceled', 'cancelled'].includes(verification.reason || '') ? 'failed' : 'pending';
     if (status === 'pending') return { paid: false, payment: paymentRow(payment) };
@@ -169,7 +170,7 @@ export async function handleMobileRequest(action: string, req: any, res: any, da
       const selected = plan.rows[0];
       if (!selected) { await client.query('ROLLBACK'); return reply(res, 404, { message: 'پلن فعال پیدا نشد.' }); }
       const amount = Number(selected.price_irr);
-      if (!Number.isSafeInteger(amount) || amount < 0 || amount > 2000000000) { await client.query('ROLLBACK'); return reply(res, 400, { message: 'مبلغ پلن معتبر نیست.' }); }
+      if (!Number.isSafeInteger(amount) || amount < 0 || amount > 50000000 || (amount > 0 && amount < 10000)) { await client.query('ROLLBACK'); return reply(res, 400, { message: 'قیمت پلن باید رایگان یا بین ۱۰٬۰۰۰ تا ۵۰٬۰۰۰٬۰۰۰ تومان باشد.' }); }
       const previous = await client.query<any>(`SELECT * FROM bluepal_payments WHERE user_id=$1 AND status='pending'
         AND created_at>NOW()-INTERVAL '30 minutes' ORDER BY created_at DESC LIMIT 1 FOR UPDATE`, [userId]);
       if (previous.rows[0]) {
@@ -178,8 +179,8 @@ export async function handleMobileRequest(action: string, req: any, res: any, da
         return reply(res, 409, { message: 'صدور فاکتور قبلی در حال بررسی است؛ برای جلوگیری از فاکتور تکراری بعداً دوباره وضعیت را بررسی کنید.', invoiceOutcomeUnknown: true });
       }
       const publicId = crypto.randomUUID();
-      const inserted = await client.query<any>(`INSERT INTO bluepal_payments(public_id,user_id,plan_id,plan_name,quota_bytes,duration_days,amount_toman)
-        VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *`, [publicId,userId,planId,selected.name,selected.quota_bytes,selected.duration_days,amount]);
+      const inserted = await client.query<any>(`INSERT INTO bluepal_payments(public_id,user_id,plan_id,plan_name,quota_bytes,duration_days,amount_toman,amount_rial)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`, [publicId,userId,planId,selected.name,selected.quota_bytes,selected.duration_days,amount,amount*10]);
       await client.query('COMMIT');
       const payment = inserted.rows[0];
       if (amount === 0) return reply(res,201,{ ...(await activatePaidPayment(database,publicId,'FREE')).payment,free:true });
@@ -187,7 +188,7 @@ export async function handleMobileRequest(action: string, req: any, res: any, da
       if (!config) return reply(res,503,{message:'تنظیمات درگاه بلوپال در دسترس نیست.'});
       const callbackUrl = `${appOrigin(req)}/api/mobile?action=payment-return&paymentId=${encodeURIComponent(publicId)}`;
       const invoice = await requestBluePalPayment(config,{amount,callbackUrl,description:`خرید پلن ${selected.name} فیلترشکن`});
-      const updated = await database.query<any>('UPDATE bluepal_payments SET track_id=$2,payment_url=$3,updated_at=NOW() WHERE public_id=$1 RETURNING *',[publicId,invoice.trackId,invoice.paymentUrl]);
+      const updated = await database.query<any>('UPDATE bluepal_payments SET track_id=$2,payment_url=$3,amount_rial=$4,expires_at=$5,updated_at=NOW() WHERE public_id=$1 RETURNING *',[publicId,invoice.trackId,invoice.paymentUrl,invoice.amountRial,invoice.expiresAt ? new Date(invoice.expiresAt) : null]);
       return reply(res,201,paymentRow(updated.rows[0]));
     } catch (error: any) {
       await client.query('ROLLBACK').catch(() => undefined);

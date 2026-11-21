@@ -47,10 +47,14 @@ export async function initializeSchema(database: Pick<Pool, 'query'>) {
       id INTEGER PRIMARY KEY CHECK (id = 1),
       api_key TEXT NOT NULL DEFAULT '',
       merchant_id TEXT NOT NULL DEFAULT '',
-      base_url TEXT NOT NULL DEFAULT 'https://www.bluepal.ir',
+      base_url TEXT NOT NULL DEFAULT 'https://blupal.top',
+      custom_endpoint TEXT NOT NULL DEFAULT '/api/v1/invoices/create',
       enabled BOOLEAN NOT NULL DEFAULT FALSE,
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+    ALTER TABLE bluepal_settings ADD COLUMN IF NOT EXISTS custom_endpoint TEXT NOT NULL DEFAULT '/api/v1/invoices/create';
+    UPDATE bluepal_settings SET base_url='https://blupal.top',custom_endpoint='/api/v1/invoices/create',merchant_id=''
+      WHERE base_url IN ('https://www.bluepal.ir','https://bluepal.ir') AND custom_endpoint='/api/v1/invoices/create';
     CREATE TABLE IF NOT EXISTS proxy_servers (
       id BIGSERIAL PRIMARY KEY, name TEXT NOT NULL, host TEXT NOT NULL,
       port INTEGER NOT NULL CHECK (port BETWEEN 1 AND 65535), username TEXT NOT NULL DEFAULT '', password TEXT NOT NULL DEFAULT '',
@@ -87,7 +91,8 @@ export async function initializeSchema(database: Pick<Pool, 'query'>) {
     CREATE TABLE IF NOT EXISTS bluepal_payments (
       id BIGSERIAL PRIMARY KEY, public_id UUID NOT NULL UNIQUE, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       plan_id BIGINT NOT NULL REFERENCES subscription_plans(id), plan_name TEXT NOT NULL, quota_bytes BIGINT NOT NULL,
-      duration_days INTEGER NOT NULL, amount_toman BIGINT NOT NULL CHECK (amount_toman >= 0), track_id TEXT UNIQUE, payment_url TEXT,
+      duration_days INTEGER NOT NULL, amount_toman BIGINT NOT NULL CHECK (amount_toman >= 0), amount_rial BIGINT NOT NULL DEFAULT 0,
+      track_id TEXT UNIQUE, payment_url TEXT, expires_at TIMESTAMPTZ,
       status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','paid','failed','expired')), reference TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), paid_at TIMESTAMPTZ
     );
