@@ -205,7 +205,7 @@ return async function handler(req: any, res: any) {
 
     if (pathname === '/api/subscriptions' && method === 'GET') {
       const plans = await database.query(`SELECT p.id,p.name,p.description,p.price_irr AS "priceIrr",p.quota_bytes AS "quotaBytes",
-        p.duration_days AS "durationDays",p.simultaneous_devices AS "simultaneousDevices",p.features,p.active,
+        p.duration_days AS "durationDays",p.simultaneous_devices AS "simultaneousDevices",p.features,p.active,p.is_trial AS "isTrial",
         COUNT(u.id) FILTER (WHERE u.subscription_expires_at>NOW() AND u.subscription_used_bytes<u.subscription_quota_bytes)::int AS users
         FROM subscription_plans p LEFT JOIN users u ON u.plan=p.name GROUP BY p.id ORDER BY p.id`);
       return reply(res, 200, plans.rows);
@@ -223,6 +223,39 @@ return async function handler(req: any, res: any) {
 
     if (pathname === '/api/subscriptions' && (method === 'POST' || method === 'PATCH')) {
       const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
+      if (method === 'PATCH') {
+        const query = new URL(req.url || '/', 'http://localhost').searchParams;
+        const id = Number(query.get('id') || body.id);
+        if (!Number.isSafeInteger(id) || id < 1) return reply(res, 400, { message: 'شناسه اشتراک معتبر نیست.' });
+        const name = body.name === undefined ? null : String(body.name).trim();
+        const description = body.description === undefined ? null : String(body.description).trim();
+        const priceIrr = body.priceIrr === undefined ? null : Number(body.priceIrr);
+        const quotaBytes = body.quotaBytes === undefined ? null : Number(body.quotaBytes);
+        const durationDays = body.durationDays === undefined ? null : Number(body.durationDays);
+        const simultaneousDevices = body.simultaneousDevices === undefined ? null : Number(body.simultaneousDevices);
+        const features = body.features === undefined ? null : body.features;
+        if ((name !== null && (name.length < 2 || name.length > 80)) ||
+            (description !== null && description.length > 1000) ||
+            (priceIrr !== null && (!Number.isSafeInteger(priceIrr) || priceIrr < 0)) ||
+            (quotaBytes !== null && (!Number.isSafeInteger(quotaBytes) || quotaBytes < 1)) ||
+            (durationDays !== null && (!Number.isInteger(durationDays) || durationDays < 1 || durationDays > 3650)) ||
+            (simultaneousDevices !== null && (!Number.isInteger(simultaneousDevices) || simultaneousDevices < 1 || simultaneousDevices > 100)) ||
+            (features !== null && (!Array.isArray(features) || features.length > 50 || features.some((feature: unknown) => typeof feature !== 'string' || feature.length > 200))) ||
+            (body.active !== undefined && typeof body.active !== 'boolean') ||
+            (body.isTrial !== undefined && typeof body.isTrial !== 'boolean')) {
+          return reply(res, 400, { message: 'مشخصات اشتراک معتبر نیست.' });
+        }
+        const updated = await database.query(`UPDATE subscription_plans SET
+          name=COALESCE($2,name),description=COALESCE($3,description),price_irr=COALESCE($4,price_irr),
+          quota_bytes=COALESCE($5,quota_bytes),duration_days=COALESCE($6,duration_days),
+          simultaneous_devices=COALESCE($7,simultaneous_devices),features=COALESCE($8::jsonb,features),
+          active=COALESCE($9::boolean,active),is_trial=COALESCE($10::boolean,is_trial),updated_at=NOW()
+          WHERE id=$1 RETURNING id,name,description,price_irr AS "priceIrr",quota_bytes AS "quotaBytes",
+          duration_days AS "durationDays",simultaneous_devices AS "simultaneousDevices",features,active,is_trial AS "isTrial"`,
+        [id,name,description,priceIrr,quotaBytes,durationDays,simultaneousDevices,features === null ? null : JSON.stringify(features),body.active ?? null,body.isTrial ?? null]);
+        if (!updated.rows[0]) return reply(res, 404, { message: 'اشتراک پیدا نشد.' });
+        return reply(res, 200, updated.rows[0]);
+      }
       const name = typeof body.name === 'string' ? body.name.trim() : '';
       const description = typeof body.description === 'string' ? body.description.trim() : '';
       const priceIrr = Number(body.priceIrr);
@@ -238,22 +271,13 @@ return async function handler(req: any, res: any) {
       }
       try {
         if (method === 'POST') {
-          const created = await database.query(`INSERT INTO subscription_plans(name,description,price_irr,quota_bytes,duration_days,simultaneous_devices,features,active)
-            VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id,name,description,price_irr AS "priceIrr",quota_bytes AS "quotaBytes",
-            duration_days AS "durationDays",simultaneous_devices AS "simultaneousDevices",features,active`,
-          [name, description, priceIrr, quotaBytes, durationDays, simultaneousDevices, JSON.stringify(features), body.active !== false]);
+          const created = await database.query(`INSERT INTO subscription_plans(name,description,price_irr,quota_bytes,duration_days,simultaneous_devices,features,active,is_trial)
+            VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id,name,description,price_irr AS "priceIrr",quota_bytes AS "quotaBytes",
+            duration_days AS "durationDays",simultaneous_devices AS "simultaneousDevices",features,active,is_trial AS "isTrial"`,
+          [name, description, priceIrr, quotaBytes, durationDays, simultaneousDevices, JSON.stringify(features), body.active !== false, body.isTrial === true]);
           return reply(res, 201, created.rows[0]);
         }
-        const query = new URL(req.url || '/', 'http://localhost').searchParams;
-        const id = Number(query.get('id') || body.id);
-        if (!Number.isSafeInteger(id) || id < 1) return reply(res, 400, { message: 'شناسه اشتراک معتبر نیست.' });
-        const updated = await database.query(`UPDATE subscription_plans SET name=$2,description=$3,price_irr=$4,quota_bytes=$5,
-          duration_days=$6,simultaneous_devices=$7,features=$8,active=$9,updated_at=NOW() WHERE id=$1
-          RETURNING id,name,description,price_irr AS "priceIrr",quota_bytes AS "quotaBytes",duration_days AS "durationDays",
-          simultaneous_devices AS "simultaneousDevices",features,active`,
-        [id, name, description, priceIrr, quotaBytes, durationDays, simultaneousDevices, JSON.stringify(features), body.active !== false]);
-        if (!updated.rows[0]) return reply(res, 404, { message: 'اشتراک پیدا نشد.' });
-        return reply(res, 200, updated.rows[0]);
+        return reply(res, 500, { message: 'درخواست اشتراک نامعتبر است.' });
       } catch (error: any) {
         if (error?.code === '23505') return reply(res, 409, { message: 'نام این اشتراک از قبل وجود دارد.' });
         throw error;
