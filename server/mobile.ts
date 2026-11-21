@@ -253,21 +253,6 @@ export async function handleMobileRequest(action: string, req: any, res: any, da
       if (!selected) { await client.query('ROLLBACK'); return reply(res, 404, { message: 'پلن فعال پیدا نشد.' }); }
       const amount = Number(selected.price_irr);
       if (!Number.isSafeInteger(amount) || amount < 0 || amount > 50000000 || (amount > 0 && amount < 10000)) { await client.query('ROLLBACK'); return reply(res, 400, { message: 'قیمت پلن باید رایگان یا بین ۱۰٬۰۰۰ تا ۵۰٬۰۰۰٬۰۰۰ تومان باشد.' }); }
-      const previous = await client.query<any>(`SELECT * FROM bluepal_payments WHERE user_id=$1 AND status='pending'
-        AND created_at>NOW()-INTERVAL '30 minutes' ORDER BY created_at DESC LIMIT 1 FOR UPDATE`, [userId]);
-      if (previous.rows[0]) {
-        if (previous.rows[0].track_id && previous.rows[0].payment_url) {
-          await client.query('COMMIT');
-          return reply(res, 200, paymentRow(previous.rows[0]));
-        }
-        if (previous.rows[0].track_id || previous.rows[0].payment_url) {
-          await client.query('COMMIT');
-          return reply(res, 409, { message: 'اطلاعات فاکتور قبلی ناقص است؛ برای جلوگیری از صدور فاکتور تکراری، پشتیبانی را مطلع کنید.', invoiceOutcomeUnknown: true });
-        }
-        // A pending row without a provider invoice ID/link can never be resumed by the app.
-        // Retire it so a failed invoice request does not block all future purchases.
-        await client.query("UPDATE bluepal_payments SET status='failed',updated_at=NOW() WHERE public_id=$1 AND status='pending'", [previous.rows[0].public_id]);
-      }
       const publicId = crypto.randomUUID();
       paymentId = publicId;
       const inserted = await client.query<any>(`INSERT INTO bluepal_payments(public_id,user_id,plan_id,plan_name,quota_bytes,duration_days,amount_toman,amount_rial)
