@@ -89,6 +89,16 @@ return async function handler(req: any, res: any) {
       return reply(res, 200, result.rows);
     }
 
+    if (pathname === '/api/dashboard-stats' && method === 'GET') {
+      const result = await database.query<any>(`SELECT COALESCE(SUM(amount_toman),0)::text AS "monthRevenueToman",
+        COUNT(*)::int AS "successfulPayments"
+        FROM bluepal_payments
+        WHERE status='paid'
+          AND COALESCE(paid_at,updated_at,created_at) >= (date_trunc('month',NOW() AT TIME ZONE 'Asia/Tehran') AT TIME ZONE 'Asia/Tehran')
+          AND COALESCE(paid_at,updated_at,created_at) < ((date_trunc('month',NOW() AT TIME ZONE 'Asia/Tehran') + INTERVAL '1 month') AT TIME ZONE 'Asia/Tehran')`);
+      return reply(res, 200, result.rows[0] || { monthRevenueToman: '0', successfulPayments: 0 });
+    }
+
     if (pathname === '/api/proxy' && method === 'GET') {
       const result = await database.query('SELECT host,port,username,password,updated_at AS "updatedAt" FROM proxy_settings WHERE id=1');
       return reply(res, 200, result.rows[0] || null);

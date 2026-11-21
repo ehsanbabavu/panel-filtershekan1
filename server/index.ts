@@ -109,6 +109,18 @@ app.get('/api/transactions', async (_req, res, next) => {
   } catch (error) { next(error); }
 });
 
+app.get('/api/dashboard-stats', async (_req, res, next) => {
+  try {
+    const result = await pool.query<any>(`SELECT COALESCE(SUM(amount_toman),0)::text AS "monthRevenueToman",
+      COUNT(*)::int AS "successfulPayments"
+      FROM bluepal_payments
+      WHERE status='paid'
+        AND COALESCE(paid_at,updated_at,created_at) >= (date_trunc('month',NOW() AT TIME ZONE 'Asia/Tehran') AT TIME ZONE 'Asia/Tehran')
+        AND COALESCE(paid_at,updated_at,created_at) < ((date_trunc('month',NOW() AT TIME ZONE 'Asia/Tehran') + INTERVAL '1 month') AT TIME ZONE 'Asia/Tehran')`);
+    res.json(result.rows[0] || { monthRevenueToman: '0', successfulPayments: 0 });
+  } catch (error) { next(error); }
+});
+
 app.get('/api/users', async (_req, res, next) => {
   try {
     const result = await selectUsers(pool);
