@@ -122,9 +122,11 @@ export async function initializeSchema(database: Pick<Pool, 'query'>) {
     CREATE TABLE IF NOT EXISTS app_user_sessions (
       token TEXT PRIMARY KEY,
       user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      device_id TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       expires_at TIMESTAMPTZ
     );
+    ALTER TABLE app_user_sessions ADD COLUMN IF NOT EXISTS device_id TEXT;
     ALTER TABLE app_user_sessions ALTER COLUMN expires_at DROP NOT NULL;
     ALTER TABLE app_user_sessions ADD COLUMN IF NOT EXISTS vpn_connected BOOLEAN NOT NULL DEFAULT FALSE;
     ALTER TABLE app_user_sessions ADD COLUMN IF NOT EXISTS vpn_heartbeat_at TIMESTAMPTZ;

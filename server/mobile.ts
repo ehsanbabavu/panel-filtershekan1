@@ -11,6 +11,12 @@ function bodyOf(req: any) {
   return typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
 }
 
+function deviceFingerprint(value: unknown) {
+  const deviceId = String(value || '').trim();
+  return deviceId.length >= 8 && deviceId.length <= 256
+    ? createHash('sha256').update(deviceId).digest('hex') : null;
+}
+
 function appOrigin(req: any) {
   const configured = String(process.env.PUBLIC_BASE_URL || '').trim();
   if (configured) {
@@ -122,9 +128,7 @@ export async function handleMobileRequest(action: string, req: any, res: any, da
       return reply(res, 400, { message: 'رمز عبور باید حداقل ۸ نویسه باشد.' });
     }
     try {
-      const deviceId = String(body.deviceId || '').trim();
-      const deviceHash = deviceId.length >= 8 && deviceId.length <= 256
-        ? createHash('sha256').update(deviceId).digest('hex') : '';
+      const deviceHash = deviceFingerprint(body.deviceId);
       const passwordHash = await bcrypt.hash(password, 10);
       const client = await database.connect();
       try {
@@ -152,7 +156,7 @@ export async function handleMobileRequest(action: string, req: any, res: any, da
         await client.query(`INSERT INTO chat_messages(user_id,sender_role,author,message,read_by_admin)
           VALUES($1,'admin','پشتیبانی','سلام، به فیلترشکن آریا خوش آمدید! حساب شما با موفقیت ساخته شد. اگر در اتصال یا استفاده از سرویس به راهنمایی نیاز داشتید، همین‌جا برای ما پیام بگذارید.',TRUE)`, [user.id]);
         const token = crypto.randomUUID();
-        await client.query('INSERT INTO app_user_sessions (token,user_id) VALUES ($1,$2)', [token, user.id]);
+        await client.query('INSERT INTO app_user_sessions (token,user_id,device_id) VALUES ($1,$2,$3)', [token, user.id, deviceHash]);
         const refreshed = await client.query<any>(`SELECT id,name,username,plan,created_at AS "createdAt",
           subscription_started_at AS "subscriptionStartedAt",subscription_expires_at AS "subscriptionExpiresAt",
           subscription_quota_bytes AS "subscriptionQuotaBytes",subscription_used_bytes AS "subscriptionUsedBytes"
@@ -170,6 +174,7 @@ export async function handleMobileRequest(action: string, req: any, res: any, da
   if (action === 'login' && method === 'POST') {
     const body = bodyOf(req);
     const username = String(body.identity || '').trim().toLowerCase();
+    const deviceId = deviceFingerprint(body.deviceId);
     const password = body.password;
     const found = await database.query<{ id: string; name: string; username: string; password_hash: string | null; created_at: string }>(
       'SELECT id, name, username, password_hash, created_at FROM users WHERE username = $1', [username],
@@ -179,7 +184,7 @@ export async function handleMobileRequest(action: string, req: any, res: any, da
       return reply(res, 401, { message: 'ایمیل/نام کاربری یا رمز عبور اشتباه است.' });
     }
     const token = crypto.randomUUID();
-    await database.query('INSERT INTO app_user_sessions (token, user_id) VALUES ($1, $2)', [token, user.id]);
+    await database.query('INSERT INTO app_user_sessions (token,user_id,device_id) VALUES ($1,$2,$3)', [token, user.id, deviceId]);
     return reply(res, 200, { token, id: user.id, name: user.name, username: user.username, createdAt: user.created_at });
   }
 
@@ -327,7 +332,9 @@ export async function handleMobileRequest(action: string, req: any, res: any, da
   }
   if (action === 'usage' && method === 'GET') {
     if (!token) return reply(res, 401, { message: 'برای ادامه وارد شوید.' });
-    const result = await database.query<any>(`SELECT u.id AS user_id,u.name,u.username,u.plan,u.blocked,u.subscription_started_at,
+    const result = await database.query<any>(`SELECT u.id AS user_id,u.name,u.username,u.plan,u.blocked,
+      COALESCE((SELECT p.simultaneous_devices FROM subscription_plans p WHERE p.name=u.plan),1) AS simultaneous_device_limit,
+      u.subscription_started_at,
       u.subscription_expires_at,(u.subscription_expires_at>NOW()) AS subscription_time_active,
       u.subscription_quota_bytes,u.subscription_used_bytes
       FROM app_user_sessions s JOIN users u ON u.id=s.user_id
@@ -338,7 +345,7 @@ export async function handleMobileRequest(action: string, req: any, res: any, da
     const canConnect=Boolean(!row.blocked&&timeActive&&used<quota);
     return reply(res,200,{id:row.user_id,name:row.name,username:row.username,plan:row.plan,
       subscriptionStartedAt:row.subscription_started_at,subscriptionExpiresAt:row.subscription_expires_at,
-      subscriptionQuotaBytes:quota.toString(),subscriptionUsedBytes:used.toString(),blocked:Boolean(row.blocked),
+      subscriptionQuotaBytes:quota.toString(),subscriptionUsedBytes:used.toString(),blocked:Boolean(row.blocked),simultaneousDevices:Number(row.simultaneous_device_limit||1),
       subscriptionTimeActive:timeActive,canConnect,exhausted:used>=quota,serverNow:new Date().toISOString()});
   }
   if (action === 'presence' && method === 'POST') {
@@ -351,7 +358,9 @@ export async function handleMobileRequest(action: string, req: any, res: any, da
     if (cumulativeBytes !== undefined && (!Number.isSafeInteger(cumulativeBytes) || cumulativeBytes < 0)) return reply(res,400,{message:'گزارش مصرف معتبر نیست.'});
     const result = await reportPresence(database, token, body.connected, body.sequence, cumulativeBytes);
     if (!result.authorized) return reply(res, 401, { message: 'نشست شما منقضی شده است.' });
-    if (result.denied) return reply(res,403,{...result.subscription,message:result.subscription?.blocked?'دسترسی این حساب توسط مدیر مسدود شده است.':'حجم یا مهلت اشتراک تمام شده است.'});
+    if (result.denied) return reply(res,403,{...result.subscription,message:result.deviceLimitExceeded
+      ? `حداکثر ${result.deviceLimit} دستگاه می‌تواند هم‌زمان متصل باشد.`
+      : result.subscription?.blocked?'دسترسی این حساب توسط مدیر مسدود شده است.':'حجم یا مهلت اشتراک تمام شده است.'});
     if (result.subscription) return reply(res,200,{...result.subscription,success:true,applied:result.applied});
     return reply(res, 200, { success: true, applied: result.applied });
   }

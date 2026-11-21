@@ -7,6 +7,7 @@ export type MobileDatabase = Pick<Pool, 'query' | 'connect'>;
 // even when no background job is running on a serverless deployment.
 const userFields = `
   u.id, u.name, u.username, u.plan, u.blocked,
+  COALESCE((SELECT p.simultaneous_devices FROM subscription_plans p WHERE p.name=u.plan),1) AS simultaneous_device_limit,
   CASE WHEN EXISTS (
     SELECT 1 FROM app_user_sessions s
     WHERE s.user_id = u.id
@@ -29,7 +30,9 @@ export async function reportPresence(database: MobileDatabase, token: string, co
   try {
     await client.query('BEGIN');
     const session = await client.query<any>(
-      `SELECT s.user_id, s.vpn_sequence, u.name, u.username, u.plan, u.blocked, u.subscription_started_at,
+      `SELECT s.user_id, s.device_id, s.vpn_sequence, u.name, u.username, u.plan, u.blocked,
+        COALESCE((SELECT p.simultaneous_devices FROM subscription_plans p WHERE p.name=u.plan),1) AS simultaneous_device_limit,
+        u.subscription_started_at,
         u.subscription_expires_at,(u.subscription_expires_at>NOW()) AS subscription_time_active,
         u.subscription_quota_bytes, u.subscription_used_bytes
        FROM app_user_sessions s JOIN users u ON u.id=s.user_id
@@ -77,6 +80,21 @@ export async function reportPresence(database: MobileDatabase, token: string, co
       await client.query('COMMIT');
       return { authorized: true, applied: false, denied: true, subscription: { ...subscriptionOf(row), canConnect: false } };
     }
+    if (connected) {
+      const occupied = await client.query<any>(`SELECT COUNT(DISTINCT COALESCE(device_id,token))::int AS count
+        FROM app_user_sessions WHERE user_id=$1 AND token<>$2
+          AND ($3::text IS NULL OR device_id IS DISTINCT FROM $3)
+          AND (expires_at IS NULL OR expires_at>NOW()) AND vpn_connected
+          AND vpn_heartbeat_at>NOW()-INTERVAL '${PRESENCE_TTL_SECONDS} seconds'`, [row.user_id, token, row.device_id || null]);
+      const activeDevices = Number(occupied.rows[0]?.count || 0);
+      const deviceLimit = Math.max(1, Number(row.simultaneous_device_limit || 1));
+      if (activeDevices >= deviceLimit) {
+        await client.query(`UPDATE app_user_sessions SET vpn_connected=FALSE,vpn_heartbeat_at=NULL,vpn_sequence=$2 WHERE token=$1`, [token, sequence]);
+        await client.query('COMMIT');
+        return { authorized: true, applied: false, denied: true, deviceLimitExceeded: true, activeDevices, deviceLimit,
+          subscription: { ...subscriptionOf(row), canConnect: false, deviceLimitExceeded: true, activeDevices, deviceLimit } };
+      }
+    }
     const canConnect = !row.blocked && active && used < quota;
     await client.query(
       `UPDATE app_user_sessions
@@ -105,5 +123,5 @@ function subscriptionOf(row: any) {
   return { id: row.user_id, name: row.name, username: row.username, plan: row.plan,
     subscriptionStartedAt: row.subscription_started_at, subscriptionExpiresAt: row.subscription_expires_at,
     subscriptionQuotaBytes: quota.toString(), subscriptionUsedBytes: used.toString(), blocked: Boolean(row.blocked),
-    subscriptionTimeActive: timeActive, canConnect, exhausted: used >= quota };
+    subscriptionTimeActive: timeActive, simultaneousDevices: Math.max(1, Number(row.simultaneous_device_limit || 1)), canConnect, exhausted: used >= quota };
 }
