@@ -7,12 +7,14 @@ import { selectUsers } from './presence.js';
 import { handleBluePalAdminRequest } from './bluepal.js';
 import { getMaintenanceMode, setMaintenanceMode } from './serviceControl.js';
 import { createProxyImportHandler } from './proxyImport.js';
+import { createProxyBulkHandler } from './proxyBulk.js';
 
 const app = express();
 const port = Number(process.env.PORT || 3001);
 export { initializeDatabase } from './database.js';
 
 app.use('/api/proxies/import', express.json({ limit: '2mb' }));
+app.use('/api/proxies/bulk', express.json({ limit: '1mb' }));
 app.use(express.json({ verify: (req: any, _res, buffer) => { req.rawBody = buffer.toString('utf8'); } }));
 app.all(['/api/mobile', '/api/mobile/:action'], createMobileHandler(pool, initializeDatabase));
 app.get('/api/mobile', async (req, res, next) => {
@@ -150,6 +152,10 @@ app.get('/api/proxies',async(_req,res,next)=>{try{
 
 app.post('/api/proxies/import', async (req,res,next) => {
   try { await createProxyImportHandler(pool)(req,res); } catch (error) { next(error); }
+});
+
+app.all('/api/proxies/bulk', async (req,res,next) => {
+  try { await createProxyBulkHandler(pool)(req,res); } catch (error) { next(error); }
 });
 
 app.post('/api/proxies',async(req,res,next)=>{try{

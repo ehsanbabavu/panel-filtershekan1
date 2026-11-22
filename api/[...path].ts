@@ -7,6 +7,7 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import { settleMobileBluePalPayment } from '../server/mobile.js';
 import { getMaintenanceMode, setMaintenanceMode } from '../server/serviceControl.js';
 import { createProxyImportHandler } from '../server/proxyImport.js';
+import { createProxyBulkHandler } from '../server/proxyBulk.js';
 
 function reply(res: any, status: number, data: unknown) {
   res.status(status).json(data);
@@ -139,6 +140,10 @@ return async function handler(req: any, res: any) {
 
     if (pathname === '/api/proxies/import' && method === 'POST') {
       return await createProxyImportHandler(database)(req,res);
+    }
+
+    if (pathname === '/api/proxies/bulk') {
+      return await createProxyBulkHandler(database)(req,res);
     }
 
     if (pathname === '/api/proxies' && method === 'DELETE') {

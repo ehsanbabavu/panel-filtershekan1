@@ -12,7 +12,8 @@ it('emitted Vercel API handlers load with the native Node ESM loader', async () 
   await mkdir(work, { recursive: true });
   const output = await mkdtemp(join(work, 'run-'));
   const sources = ['api/mobile.ts', 'api/[...path].ts', 'server/database.ts', 'server/mobile.ts', 'server/presence.ts',
-    'server/bluepal.ts', 'server/serviceControl.ts', 'server/proxyImport.ts', 'shared/proxyImport.ts'];
+    'server/bluepal.ts', 'server/serviceControl.ts', 'server/proxyImport.ts', 'shared/proxyImport.ts',
+    'server/proxyBulk.ts', 'api/proxies/import.ts', 'api/proxies/bulk.ts'];
   for (const source of sources) {
     const code = await readFile(join(root, source), 'utf8');
     const compiled = ts.transpileModule(code, {
@@ -24,7 +25,7 @@ it('emitted Vercel API handlers load with the native Node ESM loader', async () 
     await writeFile(target, compiled.outputText);
   }
   await writeFile(join(output, 'package.json'), '{"type":"module"}');
-  const urls = ['api/mobile.js', 'api/[...path].js'].map(path => pathToFileURL(join(output, path)).href);
+  const urls = ['api/mobile.js', 'api/[...path].js', 'api/proxies/import.js', 'api/proxies/bulk.js'].map(path => pathToFileURL(join(output, path)).href);
   const code = `for (const url of ${JSON.stringify(urls)}) {
     const module = await import(url);
     if (typeof module.default !== 'function') throw new Error('Missing API handler');
