@@ -8,7 +8,7 @@
     "dev:server": "tsx watch server/index.ts",
     "dev:client": "vite --host 0.0.0.0",
     "build": "tsc -b && tsc -p tsconfig.server.json && vite build",
-    "test": "tsx --test tests/presence.test.ts tests/runtime-import.test.ts",
+    "test": "tsx --test tests/presence.test.ts tests/proxy-import.test.ts tests/runtime-import.test.ts",
     "start": "tsx server/index.ts"
   },
   "dependencies": {

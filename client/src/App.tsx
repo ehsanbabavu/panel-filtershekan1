@@ -1,6 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Activity, AlertCircle, ArrowDownLeft, ArrowUpLeft, Bell, Check, CheckCircle2, ChevronDown, Command, Copy, CreditCard, ExternalLink, Key, KeyRound, LayoutDashboard, LogOut, Menu, MessageCircle, MoreHorizontal, Pencil, Plus, RefreshCw, Save, Search, Send, ShieldCheck, Trash2, Users, Wifi, X } from 'lucide-react';
 import './gateway.css';
+import { MAX_PROXY_IMPORT_BYTES, parseProxyImport } from '../../shared/proxyImport';
+import { Upload } from 'lucide-react';
 
 type User = { id: string; name: string; username: string; status: string; plan: string; lastSeen: string; connectedDevices?: number; blocked?: boolean; subscriptionStartedAt?: string; subscriptionExpiresAt?: string; subscriptionQuotaBytes?: string; subscriptionUsedBytes?: string };
 type UserSubscription = { userId: string; userName: string; username: string; planId: number; planName: string; durationDays: number; startedAt: string; expiresAt: string; quotaBytes: string; usedBytes: string; blocked: boolean; active: boolean };
@@ -327,6 +329,8 @@ function SocksView({ token, onNotify }: { token: string; onNotify: (text: string
   const [proxies, setProxies] = useState<ProxyEntry[]>([]); const [draft, setDraft] = useState<Partial<ProxyEntry> | null>(null);
   const [visiblePasswords, setVisiblePasswords] = useState<number[]>([]); const [showDraftPassword, setShowDraftPassword] = useState(false);
   const [loading, setLoading] = useState(true); const [saving, setSaving] = useState(false); const [error, setError] = useState('');
+  const [importing, setImporting] = useState(false); const [importError, setImportError] = useState('');
+  const importInput = useRef<HTMLInputElement>(null); const importBusy = useRef(false);
   const refresh = async (signal?: AbortSignal) => { const rows = await api<ProxyEntry[]>('/api/proxies', token, signal); setProxies(rows); };
   useEffect(() => {
     const controller = new AbortController();
@@ -351,8 +355,36 @@ function SocksView({ token, onNotify }: { token: string; onNotify: (text: string
     try { const response = await fetch(`/api/proxies?id=${proxy.id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } }); const result = await response.json(); if (!response.ok) throw new Error(result.message || 'حذف ساکس انجام نشد.'); setProxies(current => current.filter(item => item.id !== proxy.id)); onNotify('ساکس حذف شد.'); }
     catch (error) { onNotify(error instanceof Error ? error.message : 'حذف ساکس انجام نشد.'); }
   };
+  const importFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.currentTarget.files?.[0]; event.currentTarget.value = '';
+    if (!file || importBusy.current) return;
+    importBusy.current = true; setImporting(true); setImportError('');
+    try {
+      if (!/\.txt$/i.test(file.name)) throw new Error('لطفاً یک فایل TXT انتخاب کنید.');
+      if (file.size > MAX_PROXY_IMPORT_BYTES) throw new Error('حجم فایل TXT باید حداکثر ۱ مگابایت باشد.');
+      const content = await file.text();
+      parseProxyImport(content);
+      const response = await fetch('/api/proxies/import', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ content }) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.message || 'آپلود ساکس‌ها انجام نشد.');
+      setProxies(current => [...current, ...result.proxies]);
+      onNotify(`${Number(result.count).toLocaleString('fa-IR')} ساکس به‌ترتیب به انتهای فهرست اضافه شد.`);
+    } catch (error) { setImportError(error instanceof Error ? error.message : 'خواندن یا آپلود فایل انجام نشد.'); }
+    finally { importBusy.current = false; setImporting(false); }
+  };
   const openNew = () => { setError(''); setShowDraftPassword(false); setDraft({ name: '', host: '', port: 1080, username: '', password: '', active: true }); };
-  return <><section className="panel full-panel"><div className="panel-head"><div><h2>مدیریت ساکس‌ها</h2><p>اپ موبایل بعد از ورود، یکی از ساکس‌های فعال را به‌صورت تصادفی دریافت می‌کند.</p></div><button className="primary-btn" onClick={openNew}><Plus size={16}/> افزودن ساکس</button></div><div className="table-scroll"><table><thead><tr><th>نام</th><th>IP / میزبان</th><th>پورت</th><th>نام کاربری</th><th>رمز عبور</th><th>وضعیت</th><th>عملیات</th></tr></thead><tbody>{loading ? <tr><td colSpan={7} className="empty-state">در حال دریافت فهرست ساکس‌ها...</td></tr> : proxies.length ? proxies.map(proxy => { const passwordVisible = visiblePasswords.includes(proxy.id); return <tr key={proxy.id}><td><b>{proxy.name}</b></td><td>{proxy.host}</td><td>{proxy.port.toLocaleString('fa-IR')}</td><td>{proxy.username || 'بدون احراز هویت'}</td><td><div className="password-cell"><span>{passwordVisible ? (proxy.password || 'بدون رمز') : '••••••••'}</span><button type="button" className="text-btn" aria-label={passwordVisible ? 'پنهان کردن رمز' : 'نمایش رمز'} onClick={() => setVisiblePasswords(current => passwordVisible ? current.filter(id => id !== proxy.id) : [...current, proxy.id])}>{passwordVisible ? 'پنهان' : 'نمایش'}</button></div></td><td><button type="button" role="switch" aria-checked={proxy.active} className={`access-switch ${proxy.active ? '' : 'is-blocked'}`} onClick={() => toggleActive(proxy)}><span/><b>{proxy.active ? 'فعال' : 'غیرفعال'}</b></button></td><td><div className="user-actions"><button type="button" className="icon-btn" title="ویرایش ساکس" onClick={() => { setError(''); setShowDraftPassword(false); setDraft({ ...proxy }); }}><Pencil size={16}/></button><button type="button" className="icon-btn danger-action" title="حذف ساکس" onClick={() => remove(proxy)}><Trash2 size={16}/></button></div></td></tr>; }) : <tr><td colSpan={7} className="empty-state">هنوز ساکسی اضافه نشده است.</td></tr>}</tbody></table></div></section>
+  return <><section className="panel full-panel">
+    <div className="panel-head socks-panel-head">
+      <div><h2>مدیریت ساکس‌ها</h2><p>اپ موبایل بعد از ورود، یکی از ساکس‌های فعال را به‌صورت تصادفی دریافت می‌کند.</p></div>
+      <div className="socks-panel-actions">
+        <input ref={importInput} type="file" accept=".txt,text/plain" hidden aria-label="فایل TXT ساکس‌ها" onChange={importFile} disabled={loading || importing}/>
+        <button type="button" className="soft-btn" onClick={() => importInput.current?.click()} disabled={loading || importing}><Upload size={16}/>{importing ? 'در حال آپلود...' : 'آپلود فایل TXT'}</button>
+        <button className="primary-btn" onClick={openNew}><Plus size={16}/> افزودن ساکس</button>
+      </div>
+    </div>
+    <div className="socks-import-hint"><span>هر خط: <code dir="ltr">IP:PORT:USERNAME:PASSWORD</code></span><span>ساکس‌ها با نام و شمارهٔ خودکار به انتهای فهرست اضافه می‌شوند؛ ساکس‌های قبلی حفظ می‌شوند.</span></div>
+    {importError && <div className="user-form-error socks-import-error" role="alert">{importError}</div>}
+    <div className="table-scroll"><table><thead><tr><th>نام</th><th>IP / میزبان</th><th>پورت</th><th>نام کاربری</th><th>رمز عبور</th><th>وضعیت</th><th>عملیات</th></tr></thead><tbody>{loading ? <tr><td colSpan={7} className="empty-state">در حال دریافت فهرست ساکس‌ها...</td></tr> : proxies.length ? proxies.map(proxy => { const passwordVisible = visiblePasswords.includes(proxy.id); return <tr key={proxy.id}><td><b>{proxy.name}</b></td><td dir="ltr">{proxy.host}</td><td>{proxy.port.toLocaleString('fa-IR')}</td><td dir="ltr">{proxy.username || 'بدون احراز هویت'}</td><td><div className="password-cell"><span>{passwordVisible ? (proxy.password || 'بدون رمز') : '••••••••'}</span><button type="button" className="text-btn" aria-label={passwordVisible ? 'پنهان کردن رمز' : 'نمایش رمز'} onClick={() => setVisiblePasswords(current => passwordVisible ? current.filter(id => id !== proxy.id) : [...current, proxy.id])}>{passwordVisible ? 'پنهان' : 'نمایش'}</button></div></td><td><button type="button" role="switch" aria-checked={proxy.active} className={`access-switch ${proxy.active ? '' : 'is-blocked'}`} onClick={() => toggleActive(proxy)}><span/><b>{proxy.active ? 'فعال' : 'غیرفعال'}</b></button></td><td><div className="user-actions"><button type="button" className="icon-btn" title="ویرایش ساکس" onClick={() => { setError(''); setShowDraftPassword(false); setDraft({ ...proxy }); }}><Pencil size={16}/></button><button type="button" className="icon-btn danger-action" title="حذف ساکس" onClick={() => remove(proxy)}><Trash2 size={16}/></button></div></td></tr>; }) : <tr><td colSpan={7} className="empty-state">هنوز ساکسی اضافه نشده است.</td></tr>}</tbody></table></div></section>
     {draft && <div className="modal-scrim" onMouseDown={event => { if (event.target === event.currentTarget) setDraft(null); }}><form className="user-dialog" onSubmit={save}><div className="dialog-heading"><div><span>مدیریت پراکسی سرور</span><h2>{draft.id ? 'ویرایش ساکس' : 'ساکس جدید'}</h2></div><button type="button" className="icon-btn" onClick={() => setDraft(null)}><X size={18}/></button></div><label>نام ساکس<input required minLength={2} maxLength={80} value={draft.name || ''} onChange={event => setDraft({ ...draft, name: event.target.value })} placeholder="مثلاً سرور آلمان ۱"/></label><label>آدرس IP یا میزبان<input required maxLength={253} value={draft.host || ''} onChange={event => setDraft({ ...draft, host: event.target.value })} placeholder="203.0.113.10"/></label><div className="user-form-row"><label>پورت<input type="number" min="1" max="65535" required value={draft.port || ''} onChange={event => setDraft({ ...draft, port: Number(event.target.value) })}/></label><label>نام کاربری<input autoComplete="off" value={draft.username || ''} onChange={event => setDraft({ ...draft, username: event.target.value })}/></label></div><label>رمز عبور<div className="password-input-row"><input type={showDraftPassword ? 'text' : 'password'} autoComplete="new-password" value={draft.password || ''} onChange={event => setDraft({ ...draft, password: event.target.value })}/><button type="button" className="text-btn" onClick={() => setShowDraftPassword(value => !value)}>{showDraftPassword ? 'پنهان کردن' : 'نمایش'}</button></div></label>{error && <div className="user-form-error">{error}</div>}<div className="dialog-actions"><button type="button" className="soft-btn" onClick={() => setDraft(null)}>انصراف</button><button className="primary-btn" disabled={saving}>{saving ? 'در حال ذخیره...' : 'ذخیره ساکس'}</button></div></form></div>}</>;
 }
 function UserSubscriptionsView({ token, plans, subscriptions, loading, loadError, busyIds, onToggle, onUpdate, onNotify }: { token: string; plans: any[]; subscriptions: UserSubscription[]; loading: boolean; loadError: string; busyIds: string[]; onToggle: (subscription: UserSubscription, blocked: boolean) => void; onUpdate: (subscription: any) => void; onNotify: (text: string) => void }) {

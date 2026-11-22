@@ -11,7 +11,8 @@ it('emitted Vercel API handlers load with the native Node ESM loader', async () 
   const work = join(root, 'work', 'runtime-imports');
   await mkdir(work, { recursive: true });
   const output = await mkdtemp(join(work, 'run-'));
-  const sources = ['api/mobile.ts', 'api/[...path].ts', 'server/database.ts', 'server/mobile.ts', 'server/presence.ts'];
+  const sources = ['api/mobile.ts', 'api/[...path].ts', 'server/database.ts', 'server/mobile.ts', 'server/presence.ts',
+    'server/bluepal.ts', 'server/serviceControl.ts', 'server/proxyImport.ts', 'shared/proxyImport.ts'];
   for (const source of sources) {
     const code = await readFile(join(root, source), 'utf8');
     const compiled = ts.transpileModule(code, {

@@ -6,11 +6,13 @@ import { createMobileHandler, handleMobileRequest, settleMobileBluePalPayment } 
 import { selectUsers } from './presence.js';
 import { handleBluePalAdminRequest } from './bluepal.js';
 import { getMaintenanceMode, setMaintenanceMode } from './serviceControl.js';
+import { createProxyImportHandler } from './proxyImport.js';
 
 const app = express();
 const port = Number(process.env.PORT || 3001);
 export { initializeDatabase } from './database.js';
 
+app.use('/api/proxies/import', express.json({ limit: '2mb' }));
 app.use(express.json({ verify: (req: any, _res, buffer) => { req.rawBody = buffer.toString('utf8'); } }));
 app.all(['/api/mobile', '/api/mobile/:action'], createMobileHandler(pool, initializeDatabase));
 app.get('/api/mobile', async (req, res, next) => {
@@ -143,8 +145,12 @@ app.get('/api/users', async (_req, res, next) => {
 });
 
 app.get('/api/proxies',async(_req,res,next)=>{try{
-  const result=await pool.query(`SELECT id,name,host,port,username,password,active,updated_at AS "updatedAt" FROM proxy_servers ORDER BY id DESC`);res.json(result.rows);
+  const result=await pool.query(`SELECT id,name,host,port,username,password,active,updated_at AS "updatedAt" FROM proxy_servers ORDER BY id ASC`);res.json(result.rows);
 }catch(error){next(error);}});
+
+app.post('/api/proxies/import', async (req,res,next) => {
+  try { await createProxyImportHandler(pool)(req,res); } catch (error) { next(error); }
+});
 
 app.post('/api/proxies',async(req,res,next)=>{try{
   const {name,host,port,username='',password='',active=true}=req.body??{},n=String(name||'').trim(),h=String(host||'').trim(),p=Number(port),u=String(username),pw=String(password);

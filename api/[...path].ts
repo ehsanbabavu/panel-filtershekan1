@@ -6,6 +6,7 @@ import { handleBluePalAdminRequest } from '../server/bluepal.js';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { settleMobileBluePalPayment } from '../server/mobile.js';
 import { getMaintenanceMode, setMaintenanceMode } from '../server/serviceControl.js';
+import { createProxyImportHandler } from '../server/proxyImport.js';
 
 function reply(res: any, status: number, data: unknown) {
   res.status(status).json(data);
@@ -132,8 +133,12 @@ return async function handler(req: any, res: any) {
 
     if (pathname === '/api/proxies' && method === 'GET') {
       const result = await database.query(`SELECT id,name,host,port,username,password,active,updated_at AS "updatedAt"
-        FROM proxy_servers ORDER BY id DESC`);
+        FROM proxy_servers ORDER BY id ASC`);
       return reply(res, 200, result.rows);
+    }
+
+    if (pathname === '/api/proxies/import' && method === 'POST') {
+      return await createProxyImportHandler(database)(req,res);
     }
 
     if (pathname === '/api/proxies' && method === 'DELETE') {
