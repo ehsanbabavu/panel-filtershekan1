@@ -44,6 +44,21 @@ export async function initializeSchema(database: Pick<Pool, 'query'>) {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
     INSERT INTO service_settings(id,maintenance_mode) VALUES(1,FALSE) ON CONFLICT(id) DO NOTHING;
+    CREATE TABLE IF NOT EXISTS telegram_settings (
+      id INTEGER PRIMARY KEY CHECK(id=1), bot_token TEXT NOT NULL DEFAULT '', webhook_url TEXT NOT NULL DEFAULT '',
+      webhook_secret TEXT NOT NULL DEFAULT '', enabled BOOLEAN NOT NULL DEFAULT FALSE,
+      bot_id BIGINT, bot_username TEXT NOT NULL DEFAULT '', bot_name TEXT NOT NULL DEFAULT '',
+      last_received_at TIMESTAMPTZ, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    INSERT INTO telegram_settings(id) VALUES(1) ON CONFLICT(id) DO NOTHING;
+    CREATE TABLE IF NOT EXISTS telegram_messages (
+      id BIGSERIAL PRIMARY KEY, bot_id BIGINT NOT NULL, update_id BIGINT NOT NULL, message_id BIGINT NOT NULL,
+      chat_id TEXT NOT NULL, chat_title TEXT NOT NULL DEFAULT '', sender_name TEXT NOT NULL DEFAULT '',
+      sender_username TEXT NOT NULL DEFAULT '', text TEXT NOT NULL DEFAULT '', content_type TEXT NOT NULL DEFAULT 'text',
+      edited BOOLEAN NOT NULL DEFAULT FALSE, sent_at TIMESTAMPTZ NOT NULL, received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(bot_id,update_id)
+    );
+    CREATE INDEX IF NOT EXISTS telegram_messages_bot_received_idx ON telegram_messages(bot_id,received_at DESC,id DESC);
     CREATE TABLE IF NOT EXISTS proxy_settings (
       id INTEGER PRIMARY KEY CHECK (id = 1), host TEXT NOT NULL, port INTEGER NOT NULL CHECK (port BETWEEN 1 AND 65535),
       username TEXT NOT NULL DEFAULT '', password TEXT NOT NULL DEFAULT '', updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()

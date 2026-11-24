@@ -9,6 +9,7 @@ import { getMaintenanceMode, setMaintenanceMode } from './serviceControl.js';
 import { createProxyImportHandler } from './proxyImport.js';
 import { createProxyBulkHandler } from './proxyBulk.js';
 import { createSubscriptionUsageResetHandler } from './subscriptionUsage.js';
+import { createTelegramHandler } from './telegram.js';
 
 const app = express();
 const port = Number(process.env.PORT || 3001);
@@ -18,6 +19,7 @@ app.use('/api/proxies/import', express.json({ limit: '2mb' }));
 app.use('/api/proxies/bulk', express.json({ limit: '1mb' }));
 app.use(express.json({ verify: (req: any, _res, buffer) => { req.rawBody = buffer.toString('utf8'); } }));
 app.all(['/api/mobile', '/api/mobile/:action'], createMobileHandler(pool, initializeDatabase));
+app.all('/api/telegram', createTelegramHandler(pool, initializeDatabase));
 app.get('/api/mobile', async (req, res, next) => {
   try {
     if (String(req.query.action || '').toLowerCase() !== 'payment-return') return next();
