@@ -8,6 +8,7 @@ import { handleBluePalAdminRequest } from './bluepal.js';
 import { getMaintenanceMode, setMaintenanceMode } from './serviceControl.js';
 import { createProxyImportHandler } from './proxyImport.js';
 import { createProxyBulkHandler } from './proxyBulk.js';
+import { createSubscriptionUsageResetHandler } from './subscriptionUsage.js';
 
 const app = express();
 const port = Number(process.env.PORT || 3001);
@@ -190,6 +191,10 @@ app.delete('/api/subscriptions',async(req,res,next)=>{try{
   const result=await pool.query('DELETE FROM subscription_plans WHERE id=$1 RETURNING id',[id]);
   if(!result.rows[0])return res.status(404).json({message:'پلن پیدا نشد.'});res.json({success:true,id:result.rows[0].id});
 }catch(error){next(error);}});
+
+app.post('/api/user-subscriptions/reset-usage', async (req,res,next)=>{
+  try { return await createSubscriptionUsageResetHandler(pool)(req,res); } catch(error) { next(error); }
+});
 
 app.get('/api/user-subscriptions', async (_req,res,next)=>{try{
   const result=await pool.query(`SELECT u.id AS "userId",u.name AS "userName",u.username,p.id AS "planId",p.name AS "planName",p.duration_days AS "durationDays",

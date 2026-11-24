@@ -8,6 +8,7 @@ import { settleMobileBluePalPayment } from '../server/mobile.js';
 import { getMaintenanceMode, setMaintenanceMode } from '../server/serviceControl.js';
 import { createProxyImportHandler } from '../server/proxyImport.js';
 import { createProxyBulkHandler } from '../server/proxyBulk.js';
+import { createSubscriptionUsageResetHandler } from '../server/subscriptionUsage.js';
 
 function reply(res: any, status: number, data: unknown) {
   res.status(status).json(data);
@@ -83,6 +84,10 @@ return async function handler(req: any, res: any) {
 
     const bluePalHandled = await handleBluePalAdminRequest(pathname, method, req, res, database);
     if (bluePalHandled !== null) return bluePalHandled;
+
+    if (pathname === '/api/user-subscriptions/reset-usage') {
+      return await createSubscriptionUsageResetHandler(database)(req, res);
+    }
 
     if (pathname === '/api/service-status' && method === 'GET') {
       return reply(res, 200, { maintenanceMode: await getMaintenanceMode(database) });
