@@ -1,5 +1,6 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import type { MobileDatabase } from './presence.js';
+import { createTelegramMenuReply } from './telegramMenu.js';
 
 class TelegramError extends Error {}
 
@@ -73,6 +74,7 @@ export function createTelegramHandler(database: MobileDatabase, initialize: () =
         const senderName = [sender.first_name, sender.last_name].filter(value => typeof value === 'string').join(' ') || sender.title || message.chat.title || 'فرستنده نامشخص';
         const contentType = typeof message.text === 'string' ? 'text' : ['photo', 'video', 'voice', 'audio', 'document', 'sticker', 'contact', 'location', 'poll'].find(key => message[key]) || 'other';
         const text = typeof message.text === 'string' ? message.text : typeof message.caption === 'string' ? message.caption : '';
+        const menuReply = body.message ? await createTelegramMenuReply(database, message) : null;
         const inserted = await database.query(`INSERT INTO telegram_messages(bot_id,update_id,message_id,chat_id,chat_title,
           sender_name,sender_username,text,content_type,edited,sent_at)
           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,to_timestamp($11))
@@ -82,6 +84,7 @@ export function createTelegramHandler(database: MobileDatabase, initialize: () =
           typeof sender.username === 'string' ? sender.username.slice(0, 64) : '', text.slice(0, 4096), contentType,
           Boolean(body.edited_message || body.edited_channel_post), message.date]);
         if (inserted.rowCount) await database.query('UPDATE telegram_settings SET last_received_at=NOW() WHERE id=1 AND bot_id=$1', [row.bot_id]);
+        if (inserted.rowCount && menuReply) return reply(200, menuReply);
         return reply(200, { ok: true });
       }
 

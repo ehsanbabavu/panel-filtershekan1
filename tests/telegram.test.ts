@@ -190,6 +190,74 @@ describe('Telegram connection and webhook inbox', () => {
     assert.equal(String(result.body[0].updateId), '110');
   });
 
+  const privateUpdate = (id: number, text: string) => update(id, { text, chat: { id: 456789, type: 'private' } });
+
+  it('shows the three persistent bottom menu buttons on start and menu commands', async () => {
+    const row = await connect();
+    for (const [index, command] of ['/start', '/start@panel_test_bot invitation', '/menu'].entries()) {
+      const result = await webhook(privateUpdate(200 + index, command), row.webhook_secret);
+      assert.equal(result.code, 200); assert.equal(result.body.method, 'sendMessage');
+      assert.equal(result.body.chat_id, '456789');
+      assert.deepEqual(result.body.reply_markup.keyboard.flat().map((button: any) => button.text), ['پشتیبانی', 'اتصال به برنامه', 'تعرفه ها']);
+      assert.equal(result.body.reply_markup.resize_keyboard, true);
+      assert.equal(result.body.reply_markup.is_persistent, true);
+    }
+  });
+
+  it('guides support messages into the inbox and keeps app connection as a placeholder', async () => {
+    const row = await connect();
+    const support = await webhook(privateUpdate(210, 'پشتیبانی'), row.webhook_secret);
+    assert.match(support.body.text, /همین‌جا/);
+    const message = await webhook(privateUpdate(211, 'برای تمدید راهنمایی می‌خواهم'), row.webhook_secret);
+    assert.match(message.body.text, /پشتیبانی دریافت شد/);
+    const app = await webhook(privateUpdate(212, 'اتصال به برنامه'), row.webhook_secret);
+    assert.match(app.body.text, /هنوز فعال نشده/); assert.ok(!app.body.text.includes('https://'));
+    assert.equal((await request('messages')).body.length, 3);
+    assert.ok(support.body.reply_markup && message.body.reply_markup && app.body.reply_markup);
+  });
+
+  it('reads current active tariffs in toman and excludes trial and disabled plans', async () => {
+    const row = await connect();
+    await postgres.database.query(`INSERT INTO subscription_plans(name,price_irr,quota_bytes,duration_days,active)
+      VALUES('تعرفه آزمون',123456,2147483648,12,TRUE),('تعرفه خاموش',999,1073741824,7,FALSE)`);
+    try {
+      for (const [index, label] of ['تعرفه ها', 'تعرفه‌ها'].entries()) {
+        const result = await webhook(privateUpdate(220 + index, label), row.webhook_secret);
+        assert.equal(result.code, 200); assert.equal(result.body.method, 'sendMessage');
+        assert.match(result.body.text, /تعرفه آزمون/); assert.match(result.body.text, /۱۲۳٬۴۵۶ تومان/);
+        assert.match(result.body.text, /۲ گیگابایت/); assert.match(result.body.text, /۱۲ روز/);
+        assert.ok(!result.body.text.includes('تعرفه خاموش')); assert.ok(!result.body.text.includes('آزمایشی'));
+        assert.ok(result.body.text.length <= 4096);
+      }
+    } finally { await postgres.database.query("DELETE FROM subscription_plans WHERE name IN ('تعرفه آزمون','تعرفه خاموش')"); }
+  });
+
+  it('shows a useful message when there are no active paid plans', async () => {
+    const row = await connect();
+    const active = (await postgres.database.query<any>('SELECT id FROM subscription_plans WHERE active=TRUE')).rows.map((plan: any) => plan.id);
+    await postgres.database.query('UPDATE subscription_plans SET active=FALSE');
+    try {
+      const result = await webhook(privateUpdate(230, 'تعرفه ها'), row.webhook_secret);
+      assert.match(result.body.text, /تعرفه‌ای فعال نیست/); assert.ok(result.body.reply_markup);
+    } finally { await postgres.database.query('UPDATE subscription_plans SET active=TRUE WHERE id=ANY($1::bigint[])', [active]); }
+  });
+
+  it('does not send a second menu response for a retried update', async () => {
+    const row = await connect(); const body = privateUpdate(240, '/start');
+    const first = await webhook(body, row.webhook_secret); assert.equal(first.body.method, 'sendMessage');
+    const retry = await webhook(body, row.webhook_secret, true); assert.deepEqual(retry.body, { ok: true });
+    assert.equal((await request('messages')).body.length, 1);
+    assert.ok(calls.every(call => ['getMe', 'setWebhook'].includes(call.method)));
+  });
+
+  it('does not send menu responses in groups, channels, edited messages or bot messages', async () => {
+    const row = await connect();
+    assert.deepEqual((await webhook(update(250, { text: '/start', chat: { id: -123, type: 'group' } }), row.webhook_secret)).body, { ok: true });
+    assert.deepEqual((await webhook({ update_id: 251, edited_message: privateUpdate(251, '/start').message }, row.webhook_secret)).body, { ok: true });
+    assert.deepEqual((await webhook({ update_id: 252, channel_post: update(252, { text: '/start', chat: { id: -456, type: 'channel' } }).message }, row.webhook_secret)).body, { ok: true });
+    assert.deepEqual((await webhook(update(253, { text: '/start', chat: { id: 456789, type: 'private' }, from: { id: 123, is_bot: true } }), row.webhook_secret)).body, { ok: true });
+  });
+
   it('keeps schema initialization idempotent and preserves Telegram history', async () => {
     const row = await connect(); await webhook(update(), row.webhook_secret);
     await initializeSchema(postgres.database);
