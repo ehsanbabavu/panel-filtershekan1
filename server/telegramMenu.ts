@@ -1,3 +1,4 @@
+import { randomInt } from 'node:crypto';
 import type { MobileDatabase } from './presence.js';
 
 const keyboard = {
@@ -7,16 +8,27 @@ const keyboard = {
   input_field_placeholder: 'یک گزینه انتخاب کنید',
 };
 
+function createAppConnectionCode() {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  let suffix: string;
+  do {
+    suffix = Array.from({ length: 10 }, () => alphabet[randomInt(alphabet.length)]).join('');
+  } while (!/[A-Za-z]/.test(suffix) || !/[0-9]/.test(suffix));
+  return 'Ariya' + suffix;
+}
+
 export async function createTelegramMenuReply(database: MobileDatabase, message: any) {
   if (message.chat.type !== 'private' || message.from?.is_bot) return null;
   const command = typeof message.text === 'string' ? message.text.trim().replace(/\u200c/g, ' ') : '';
   let text: string;
+  let parseMode: 'HTML' | undefined;
   if (/^\/(start|menu)(?:@[A-Za-z0-9_]+)?(?:\s|$)/i.test(command)) {
     text = 'سلام! از منوی پایین یک گزینه را انتخاب کنید.';
   } else if (command === 'پشتیبانی') {
     text = 'پیام یا سؤال خود را همین‌جا بفرستید. پیام شما در پنل پشتیبانی ثبت می‌شود.';
   } else if (command === 'اتصال به برنامه') {
-    text = 'بخش اتصال به برنامه هنوز فعال نشده است.';
+    text = `کد اتصال به برنامه:\n\n<code>${createAppConnectionCode()}</code>\n\nبرای کپی، روی کد بزنید.`;
+    parseMode = 'HTML';
   } else if (command === 'تعرفه ها') {
     const plans = (await database.query<any>(`SELECT name,price_irr,quota_bytes,duration_days
       FROM subscription_plans WHERE active=TRUE AND is_trial=FALSE ORDER BY price_irr,id LIMIT 12`)).rows;
@@ -30,5 +42,6 @@ export async function createTelegramMenuReply(database: MobileDatabase, message:
     text = 'پیام شما برای پشتیبانی دریافت شد. می‌توانید از منوی پایین هم استفاده کنید.';
   }
   // Telegram can send this message directly from the JSON webhook response.
-  return { method: 'sendMessage', chat_id: String(message.chat.id), text: text.trim().slice(0, 4096), reply_markup: keyboard };
+  return { method: 'sendMessage', chat_id: String(message.chat.id), text: text.trim().slice(0, 4096), reply_markup: keyboard,
+    ...(parseMode ? { parse_mode: parseMode } : {}) };
 }

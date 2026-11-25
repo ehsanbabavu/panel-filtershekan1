@@ -204,16 +204,44 @@ describe('Telegram connection and webhook inbox', () => {
     }
   });
 
-  it('guides support messages into the inbox and keeps app connection as a placeholder', async () => {
+  it('guides support messages into the inbox and displays a copyable app connection code', async () => {
     const row = await connect();
     const support = await webhook(privateUpdate(210, 'پشتیبانی'), row.webhook_secret);
     assert.match(support.body.text, /همین‌جا/);
     const message = await webhook(privateUpdate(211, 'برای تمدید راهنمایی می‌خواهم'), row.webhook_secret);
     assert.match(message.body.text, /پشتیبانی دریافت شد/);
     const app = await webhook(privateUpdate(212, 'اتصال به برنامه'), row.webhook_secret);
-    assert.match(app.body.text, /هنوز فعال نشده/); assert.ok(!app.body.text.includes('https://'));
+    assert.equal(app.code, 200);
+    assert.equal(app.body.parse_mode, 'HTML');
+    assert.match(app.body.text, /<code>Ariya[A-Za-z0-9]{10}<\/code>/);
+    assert.equal(support.body.parse_mode, undefined);
+    assert.equal(message.body.parse_mode, undefined);
     assert.equal((await request('messages')).body.length, 3);
     assert.ok(support.body.reply_markup && message.body.reply_markup && app.body.reply_markup);
+  });
+
+  it('generates a fresh 15-character code with letters and digits for every app connection click', async () => {
+    const row = await connect();
+    const codes = new Set<string>();
+    for (let index = 0; index < 20; index++) {
+      const result = await webhook(privateUpdate(300 + index, 'اتصال به برنامه'), row.webhook_secret, index % 2 === 1);
+      assert.equal(result.code, 200);
+      assert.equal(result.body.method, 'sendMessage');
+      assert.equal(result.body.chat_id, '456789');
+      assert.equal(result.body.parse_mode, 'HTML');
+      const code = result.body.text.match(/<code>([^<]+)<\/code>/)?.[1];
+      assert.ok(code);
+      assert.equal(code.length, 15);
+      assert.match(code, /^Ariya[A-Za-z0-9]{10}$/);
+      assert.match(code.slice(5), /[A-Za-z]/);
+      assert.match(code.slice(5), /[0-9]/);
+      assert.ok(!codes.has(code));
+      codes.add(code);
+      assert.ok(result.body.reply_markup);
+      const retry = await webhook(privateUpdate(300 + index, 'اتصال به برنامه'), row.webhook_secret);
+      assert.deepEqual(retry.body, { ok: true });
+    }
+    assert.equal((await request('messages')).body.length, 20);
   });
 
   it('reads current active tariffs in toman and excludes trial and disabled plans', async () => {
@@ -256,6 +284,9 @@ describe('Telegram connection and webhook inbox', () => {
     assert.deepEqual((await webhook({ update_id: 251, edited_message: privateUpdate(251, '/start').message }, row.webhook_secret)).body, { ok: true });
     assert.deepEqual((await webhook({ update_id: 252, channel_post: update(252, { text: '/start', chat: { id: -456, type: 'channel' } }).message }, row.webhook_secret)).body, { ok: true });
     assert.deepEqual((await webhook(update(253, { text: '/start', chat: { id: 456789, type: 'private' }, from: { id: 123, is_bot: true } }), row.webhook_secret)).body, { ok: true });
+    assert.deepEqual((await webhook(update(254, { text: 'اتصال به برنامه', chat: { id: -123, type: 'group' } }), row.webhook_secret)).body, { ok: true });
+    assert.deepEqual((await webhook({ update_id: 255, edited_message: privateUpdate(255, 'اتصال به برنامه').message }, row.webhook_secret)).body, { ok: true });
+    assert.deepEqual((await webhook(update(256, { text: 'اتصال به برنامه', chat: { id: 456789, type: 'private' }, from: { id: 123, is_bot: true } }), row.webhook_secret)).body, { ok: true });
   });
 
   it('keeps schema initialization idempotent and preserves Telegram history', async () => {
