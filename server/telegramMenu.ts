@@ -1,23 +1,14 @@
-import { randomInt } from 'node:crypto';
+import { issueTelegramConnectionCode, telegramIdentity, telegramSubscriptionText } from './telegramLink.js';
 import type { MobileDatabase } from './presence.js';
 
 const keyboard = {
-  keyboard: [[{ text: 'پشتیبانی' }, { text: 'اتصال به برنامه' }], [{ text: 'تعرفه ها' }]],
+  keyboard: [[{ text: 'پشتیبانی' }, { text: 'اتصال به برنامه' }], [{ text: 'تعرفه ها' }, { text: 'وضعیت اشتراک' }]],
   resize_keyboard: true,
   is_persistent: true,
   input_field_placeholder: 'یک گزینه انتخاب کنید',
 };
 
-function createAppConnectionCode() {
-  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-  let suffix: string;
-  do {
-    suffix = Array.from({ length: 10 }, () => alphabet[randomInt(alphabet.length)]).join('');
-  } while (!/[A-Za-z]/.test(suffix) || !/[0-9]/.test(suffix));
-  return 'Ariya' + suffix;
-}
-
-export async function createTelegramMenuReply(database: MobileDatabase, message: any) {
+export async function createTelegramMenuReply(database: Pick<MobileDatabase, 'query'>, message: any, botId: string | number, updateId: number) {
   if (message.chat.type !== 'private' || message.from?.is_bot) return null;
   const command = typeof message.text === 'string' ? message.text.trim().replace(/\u200c/g, ' ') : '';
   let text: string;
@@ -27,8 +18,15 @@ export async function createTelegramMenuReply(database: MobileDatabase, message:
   } else if (command === 'پشتیبانی') {
     text = 'پیام یا سؤال خود را همین‌جا بفرستید. پیام شما در پنل پشتیبانی ثبت می‌شود.';
   } else if (command === 'اتصال به برنامه') {
-    text = `کد اتصال به برنامه:\n\n<code>${createAppConnectionCode()}</code>\n\nبرای کپی، روی کد بزنید.`;
+    const identity = telegramIdentity(message);
+    if (!identity) return null;
+    const code = await issueTelegramConnectionCode(database, botId, updateId, identity);
+    text = `کد اتصال به برنامه:\n\n<code>${code}</code>\n\nدر تب پروفایل برنامه، آیکن تلگرام را بزنید و این کد را وارد کنید.\nکد یک‌بارمصرف است و ۱۰ دقیقه اعتبار دارد. برای کپی، روی کد بزنید.`;
     parseMode = 'HTML';
+  } else if (command === 'وضعیت اشتراک') {
+    const identity = telegramIdentity(message);
+    if (!identity) return null;
+    text = await telegramSubscriptionText(database, botId, identity);
   } else if (command === 'تعرفه ها') {
     const plans = (await database.query<any>(`SELECT name,price_irr,quota_bytes,duration_days
       FROM subscription_plans WHERE active=TRUE AND is_trial=FALSE ORDER BY price_irr,id LIMIT 12`)).rows;

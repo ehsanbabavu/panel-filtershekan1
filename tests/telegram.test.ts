@@ -192,13 +192,13 @@ describe('Telegram connection and webhook inbox', () => {
 
   const privateUpdate = (id: number, text: string) => update(id, { text, chat: { id: 456789, type: 'private' } });
 
-  it('shows the three persistent bottom menu buttons on start and menu commands', async () => {
+  it('shows the four persistent bottom menu buttons on start and menu commands', async () => {
     const row = await connect();
     for (const [index, command] of ['/start', '/start@panel_test_bot invitation', '/menu'].entries()) {
       const result = await webhook(privateUpdate(200 + index, command), row.webhook_secret);
       assert.equal(result.code, 200); assert.equal(result.body.method, 'sendMessage');
       assert.equal(result.body.chat_id, '456789');
-      assert.deepEqual(result.body.reply_markup.keyboard.flat().map((button: any) => button.text), ['پشتیبانی', 'اتصال به برنامه', 'تعرفه ها']);
+      assert.deepEqual(result.body.reply_markup.keyboard.flat().map((button: any) => button.text), ['پشتیبانی', 'اتصال به برنامه', 'تعرفه ها', 'وضعیت اشتراک']);
       assert.equal(result.body.reply_markup.resize_keyboard, true);
       assert.equal(result.body.reply_markup.is_persistent, true);
     }

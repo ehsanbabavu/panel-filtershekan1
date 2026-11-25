@@ -1,0 +1,3 @@
+.user-telegram{display:flex;flex-direction:column;align-items:flex-start;gap:4px;white-space:nowrap;font-size:12px}
+.user-telegram a{color:#1397c5;text-decoration:none}.user-telegram a:hover{text-decoration:underline}
+.user-telegram small,.telegram-unlinked{color:#81909d;font-size:11px}

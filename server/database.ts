@@ -1,5 +1,6 @@
 import bcrypt from 'bcryptjs';
 import { Pool } from 'pg';
+import { telegramLinkSchema } from './telegramLink.js';
 
 export const pool = new Pool({
   connectionString: process.env.DATABASE_URL || process.env.POSTGRES_URL,
@@ -51,6 +52,7 @@ export async function initializeSchema(database: Pick<Pool, 'query'>) {
       last_received_at TIMESTAMPTZ, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
     INSERT INTO telegram_settings(id) VALUES(1) ON CONFLICT(id) DO NOTHING;
+    ${telegramLinkSchema}
     CREATE TABLE IF NOT EXISTS telegram_messages (
       id BIGSERIAL PRIMARY KEY, bot_id BIGINT NOT NULL, update_id BIGINT NOT NULL, message_id BIGINT NOT NULL,
       chat_id TEXT NOT NULL, chat_title TEXT NOT NULL DEFAULT '', sender_name TEXT NOT NULL DEFAULT '',

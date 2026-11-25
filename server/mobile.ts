@@ -1,4 +1,5 @@
 import bcrypt from 'bcryptjs';
+import { handleTelegramLinkRequest } from './telegramLink.js';
 import { createHash } from 'node:crypto';
 import { PRESENCE_TTL_SECONDS, reportPresence, subscriptionOf, type MobileDatabase } from './presence.js';
 import { readBluePalConfig, requestBluePalPayment, verifyBluePalPayment } from './bluepal.js';
@@ -110,7 +111,7 @@ function paymentReturnPage(paid: boolean, paymentId = '') {
 
 export async function handleMobileRequest(action: string, req: any, res: any, database: MobileDatabase) {
   const method = String(req.method || 'GET').toUpperCase();
-  if (!['register', 'login', 'me', 'logout', 'devices', 'device-logout', 'connect', 'presence', 'usage', 'proxy', 'chat', 'plans', 'payment-create', 'payment-status', 'payment-page', 'payment-page-status', 'payment-return'].includes(action)) {
+  if (!['telegram-link', 'register', 'login', 'me', 'logout', 'devices', 'device-logout', 'connect', 'presence', 'usage', 'proxy', 'chat', 'plans', 'payment-create', 'payment-status', 'payment-page', 'payment-page-status', 'payment-return'].includes(action)) {
     return reply(res, 404, { message: 'مسیر پیدا نشد.' });
   }
 
@@ -202,6 +203,7 @@ export async function handleMobileRequest(action: string, req: any, res: any, da
 
   const token = String(req.headers?.authorization || '').replace(/^Bearer\s+/i, '');
   const query = new URL(req.originalUrl || req.url || '/', 'http://localhost').searchParams;
+  if (action === 'telegram-link') return handleTelegramLinkRequest(req, res, database, token);
   if (action === 'payment-page' && method === 'GET') {
     const paymentId = String(query.get('paymentId') || '');
     if (!/^[0-9a-f-]{36}$/i.test(paymentId)) return reply(res, 400, { message: 'شناسه فاکتور معتبر نیست.' });

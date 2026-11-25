@@ -74,18 +74,24 @@ export function createTelegramHandler(database: MobileDatabase, initialize: () =
         const senderName = [sender.first_name, sender.last_name].filter(value => typeof value === 'string').join(' ') || sender.title || message.chat.title || 'فرستنده نامشخص';
         const contentType = typeof message.text === 'string' ? 'text' : ['photo', 'video', 'voice', 'audio', 'document', 'sticker', 'contact', 'location', 'poll'].find(key => message[key]) || 'other';
         const text = typeof message.text === 'string' ? message.text : typeof message.caption === 'string' ? message.caption : '';
-        const menuReply = body.message ? await createTelegramMenuReply(database, message) : null;
-        const inserted = await database.query(`INSERT INTO telegram_messages(bot_id,update_id,message_id,chat_id,chat_title,
-          sender_name,sender_username,text,content_type,edited,sent_at)
-          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,to_timestamp($11))
-          ON CONFLICT(bot_id,update_id) DO NOTHING RETURNING id`,
-        [row.bot_id, body.update_id, message.message_id, String(message.chat.id),
-          String(message.chat.title || senderName).slice(0, 256), String(senderName).slice(0, 256),
-          typeof sender.username === 'string' ? sender.username.slice(0, 64) : '', text.slice(0, 4096), contentType,
-          Boolean(body.edited_message || body.edited_channel_post), message.date]);
-        if (inserted.rowCount) await database.query('UPDATE telegram_settings SET last_received_at=NOW() WHERE id=1 AND bot_id=$1', [row.bot_id]);
-        if (inserted.rowCount && menuReply) return reply(200, menuReply);
-        return reply(200, { ok: true });
+        const client = await database.connect();
+        try {
+          await client.query('BEGIN');
+          const inserted = await client.query(`INSERT INTO telegram_messages(bot_id,update_id,message_id,chat_id,chat_title,
+            sender_name,sender_username,text,content_type,edited,sent_at)
+            VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,to_timestamp($11))
+            ON CONFLICT(bot_id,update_id) DO NOTHING RETURNING id`,
+          [row.bot_id, body.update_id, message.message_id, String(message.chat.id),
+            String(message.chat.title || senderName).slice(0, 256), String(senderName).slice(0, 256),
+            typeof sender.username === 'string' ? sender.username.slice(0, 64) : '', text.slice(0, 4096), contentType,
+            Boolean(body.edited_message || body.edited_channel_post), message.date]);
+          if (inserted.rowCount) await client.query('UPDATE telegram_settings SET last_received_at=NOW() WHERE id=1 AND bot_id=$1', [row.bot_id]);
+          const menuReply = inserted.rowCount && body.message ? await createTelegramMenuReply(client, message, row.bot_id, body.update_id) : null;
+          await client.query('COMMIT');
+          if (inserted.rowCount && menuReply) return reply(200, menuReply);
+          return reply(200, { ok: true });
+        } catch (error) { await client.query('ROLLBACK').catch(() => undefined); throw error; }
+        finally { client.release(); }
       }
 
       const token = String(req.headers?.authorization || '').replace(/^Bearer\s+/i, '');

@@ -7,6 +7,8 @@ export type MobileDatabase = Pick<Pool, 'query' | 'connect'>;
 // even when no background job is running on a serverless deployment.
 const userFields = `
   u.id, u.name, u.username, u.plan, u.blocked,
+  tl.telegram_user_id::text AS "telegramId",tl.telegram_username AS "telegramUsername",
+  tl.telegram_name AS "telegramName",tl.linked_at AS "telegramLinkedAt",
   COALESCE((SELECT p.simultaneous_devices FROM subscription_plans p WHERE p.name=u.plan),1) AS simultaneous_device_limit,
   (SELECT COUNT(DISTINCT COALESCE(s.device_id,s.token))::int FROM app_user_sessions s
     WHERE s.user_id=u.id AND (s.expires_at IS NULL OR s.expires_at>NOW())
@@ -24,7 +26,7 @@ const userFields = `
 
 export function selectUsers(database: Pick<Pool, 'query'>, id?: string) {
   return database.query(
-    `SELECT ${userFields} FROM users u ${id ? 'WHERE u.id = $1' : 'ORDER BY u.id DESC'}`,
+    `SELECT ${userFields} FROM users u LEFT JOIN telegram_user_links tl ON tl.user_id=u.id ${id ? 'WHERE u.id = $1' : 'ORDER BY u.id DESC'}`,
     id ? [id] : [],
   );
 }
