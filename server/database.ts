@@ -97,6 +97,7 @@ export async function initializeSchema(database: Pick<Pool, 'query'>) {
       ON CONFLICT(legacy_settings_id) DO NOTHING;
     INSERT INTO system_migrations(version) VALUES('legacy-proxy-to-list-v1') ON CONFLICT(version) DO NOTHING;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS password_encrypted TEXT;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS last_vpn_seen TIMESTAMPTZ;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_started_at TIMESTAMPTZ;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_expires_at TIMESTAMPTZ;

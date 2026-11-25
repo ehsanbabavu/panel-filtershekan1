@@ -20,9 +20,15 @@ export async function createTelegramMenuReply(database: Pick<MobileDatabase, 'qu
   } else if (command === 'اتصال به برنامه') {
     const identity = telegramIdentity(message);
     if (!identity) return null;
-    const code = await issueTelegramConnectionCode(database, botId, updateId, identity);
-    text = `کد اتصال به برنامه:\n\n<code>${code}</code>\n\nدر تب پروفایل برنامه، آیکن تلگرام را بزنید و این کد را وارد کنید.\nکد یک‌بارمصرف است و ۱۰ دقیقه اعتبار دارد. برای کپی، روی کد بزنید.`;
-    parseMode = 'HTML';
+    const linked = await database.query(`SELECT 1 FROM telegram_user_links l JOIN users u ON u.id=l.user_id
+      WHERE l.bot_id=$1 AND l.telegram_user_id=$2`, [botId, identity.id]);
+    if (linked.rowCount) {
+      text = 'ربات با موفقیت متصل شد';
+    } else {
+      const code = await issueTelegramConnectionCode(database, botId, updateId, identity);
+      text = `کد اتصال به برنامه:\n\n<code>${code}</code>\n\nدر تب پروفایل برنامه، آیکن تلگرام را بزنید و این کد را وارد کنید.\nکد یک‌بارمصرف است و ۱۰ دقیقه اعتبار دارد. برای کپی، روی کد بزنید.`;
+      parseMode = 'HTML';
+    }
   } else if (command === 'وضعیت اشتراک') {
     const identity = telegramIdentity(message);
     if (!identity) return null;

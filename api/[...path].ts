@@ -1,4 +1,5 @@
 import bcrypt from 'bcryptjs';
+import { encryptUserPassword } from '../server/userPassword.js';
 import { initializeDatabase, pool } from '../server/database.js';
 import { handleMobileRequest } from '../server/mobile.js';
 import { selectUsers, type MobileDatabase } from '../server/presence.js';
@@ -347,11 +348,12 @@ return async function handler(req: any, res: any) {
       if (!planRow.rows[0]) return reply(res, 400, { message: 'پلن اشتراک فعال پیدا نشد.' });
       try {
         const passwordHash = await bcrypt.hash(password, 10);
+        const encryptedPassword = encryptUserPassword(password, passwordHash);
         const created = await database.query<any>(
-          `INSERT INTO users (name, username, status, plan, last_seen, password_hash)
-           VALUES ($1, $2, 'آفلاین', $3, 'هنوز متصل نشده', $4)
+          `INSERT INTO users (name, username, status, plan, last_seen, password_hash, password_encrypted)
+           VALUES ($1, $2, 'آفلاین', $3, 'هنوز متصل نشده', $4, $5)
            RETURNING id, name, username, status, plan, last_seen AS "lastSeen"`,
-          [name, username, plan, passwordHash],
+          [name, username, plan, passwordHash, encryptedPassword],
         );
         const user = created.rows[0];
         const subscription = await database.query<any>(`UPDATE users SET subscription_started_at=NOW(),
@@ -388,13 +390,15 @@ return async function handler(req: any, res: any) {
       }
       try {
         const passwordHash = password ? await bcrypt.hash(password, 10) : null;
+        const encryptedPassword = passwordHash ? encryptUserPassword(password, passwordHash) : null;
         const updated = await database.query<any>(
           `UPDATE users
            SET name = $1, username = $2, plan = $3, password_hash = COALESCE($4, password_hash),
+               password_encrypted = CASE WHEN $4::text IS NULL THEN password_encrypted ELSE $8 END,
                subscription_started_at=NOW(),subscription_expires_at=NOW()+$6*INTERVAL '1 day',
                subscription_quota_bytes=$7,subscription_used_bytes=0
            WHERE id = $5 RETURNING id,subscription_started_at AS "startedAt",subscription_expires_at AS "expiresAt",subscription_quota_bytes AS "quotaBytes"`,
-          [name, username, plan, passwordHash, id, planRow.rows[0].duration_days, planRow.rows[0].quota_bytes],
+          [name, username, plan, passwordHash, id, planRow.rows[0].duration_days, planRow.rows[0].quota_bytes, encryptedPassword],
         );
         if (!updated.rows[0]) return reply(res, 404, { message: 'کاربر پیدا نشد.' });
         await database.query(`UPDATE user_subscriptions SET status='cancelled' WHERE user_id=$1 AND status='active'`, [id]);

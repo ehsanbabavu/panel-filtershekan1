@@ -26,7 +26,7 @@ describe('VPN presence through the mobile and panel HTTP APIs', () => {
   async function register(route = '/api/mobile?action=register') {
     const identity = 'presence.user.' + (++accountNumber);
     const password = 'test-password-123';
-    const result = await request(route, 'POST', '', { name: 'کاربر آزمایش', identity, password });
+    const result = await request(route, 'POST', '', { name: 'کاربر آزمایش', identity, password, deviceId: 'presence-device-' + accountNumber });
     assert.equal(result.code, 201);
     return { ...result.body, identity, password };
   }
@@ -117,10 +117,11 @@ describe('VPN presence through the mobile and panel HTTP APIs', () => {
 
   it('keeps a user online until all connected devices disconnect or log out', async () => {
     const user = await register();
+    await postgres.database.query("UPDATE users SET plan='پایه' WHERE id=$1", [user.id]);
     const login = await request('/api/mobile?action=login', 'POST', '', { identity: user.identity, password: user.password });
     const secondToken = login.body.token;
-    await presence(user.token, true, 1);
-    await presence(secondToken, true, 1);
+    assert.equal((await presence(user.token, true, 1)).code, 200);
+    assert.equal((await presence(secondToken, true, 1)).code, 200);
     await presence(user.token, false, 2);
     assert.equal(await status(user.id), 'آنلاین');
     await request('/api/mobile?action=logout', 'POST', user.token);
@@ -187,7 +188,7 @@ it('migrates existing accounts and sessions without fabricating an online VPN', 
     await postgres.database.query(`
       CREATE TABLE users (
         id BIGSERIAL PRIMARY KEY, name TEXT NOT NULL, username TEXT NOT NULL UNIQUE,
-        status TEXT NOT NULL, plan TEXT NOT NULL, last_seen TEXT NOT NULL
+        status TEXT NOT NULL, plan TEXT NOT NULL, last_seen TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
       CREATE TABLE app_user_sessions (
         token TEXT PRIMARY KEY, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,

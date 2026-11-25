@@ -1,5 +1,6 @@
 import { createHash, randomInt } from 'node:crypto';
 import { subscriptionOf, type MobileDatabase } from './presence.js';
+import { decryptUserPassword } from './userPassword.js';
 
 type QueryDatabase = Pick<MobileDatabase, 'query'>;
 
@@ -94,7 +95,7 @@ export async function handleTelegramLinkRequest(req: any, res: any, database: Mo
 export async function telegramSubscriptionText(database: QueryDatabase, botId: string | number, identity: NonNullable<ReturnType<typeof telegramIdentity>>) {
   await database.query(`UPDATE telegram_user_links SET telegram_username=$3,telegram_name=$4
     WHERE bot_id=$1 AND telegram_user_id=$2`, [botId, identity.id, identity.username, identity.name]);
-  const row = (await database.query<any>(`SELECT u.id AS user_id,u.name,u.username,u.plan,u.blocked,
+  const row = (await database.query<any>(`SELECT u.id AS user_id,u.name,u.username,u.password_hash,u.password_encrypted,u.plan,u.blocked,
     u.subscription_started_at,u.subscription_expires_at,(u.subscription_expires_at>NOW()) AS subscription_time_active,
     u.subscription_quota_bytes,u.subscription_used_bytes,
     COALESCE(p.simultaneous_devices,1) AS simultaneous_device_limit
@@ -107,5 +108,23 @@ export async function telegramSubscriptionText(database: QueryDatabase, botId: s
   const date = (value: any) => value ? new Intl.DateTimeFormat('fa-IR', { dateStyle: 'medium', timeZone: 'Asia/Tehran' }).format(new Date(value)) : '—';
   const status = sub.blocked ? 'مسدود' : quota === 0n || !sub.subscriptionExpiresAt ? 'بدون اشتراک' : !sub.subscriptionTimeActive ? 'منقضی‌شده' : sub.exhausted ? 'حجم تمام شده' : 'فعال';
   const days = Math.max(0, Math.ceil((new Date(sub.subscriptionExpiresAt || 0).getTime() - Date.now()) / 86400000));
-  return `وضعیت اشتراک شما\n\nنام: ${row.name}\nنام کاربری: ${row.username}\nپلن: ${row.plan}\nوضعیت: ${status}\nحجم کل: ${gigabytes(quota)}\nمصرف‌شده: ${gigabytes(used)}\nباقی‌مانده: ${gigabytes(quota > used ? quota - used : 0n)}\nشروع: ${date(sub.subscriptionStartedAt)}\nپایان: ${date(sub.subscriptionExpiresAt)}\nروزهای باقی‌مانده: ${days.toLocaleString('fa-IR')}\nدستگاه‌های مجاز هم‌زمان: ${sub.simultaneousDevices.toLocaleString('fa-IR')}`;
+  const password = decryptUserPassword(row.password_encrypted, row.password_hash);
+  const unavailablePassword = process.env.USER_PASSWORD_ENCRYPTION_KEY?.trim()
+    ? 'برای نمایش رمز، یک‌بار از برنامه خارج شوید و دوباره وارد شوید.'
+    : 'نمایش رمز فعلاً در دسترس نیست.';
+  return [
+    'وضعیت اشتراک شما',
+    `نام: ${row.name}`,
+    `نام کاربری: ${row.username}`,
+    `رمز عبور: ${password ?? unavailablePassword}`,
+    `پلن: ${row.plan}`,
+    `وضعیت: ${status}`,
+    `حجم کل: ${gigabytes(quota)}`,
+    `مصرف‌شده: ${gigabytes(used)}`,
+    `باقی‌مانده: ${gigabytes(quota > used ? quota - used : 0n)}`,
+    `شروع: ${date(sub.subscriptionStartedAt)}`,
+    `پایان: ${date(sub.subscriptionExpiresAt)}`,
+    `روزهای باقی‌مانده: ${days.toLocaleString('fa-IR')}`,
+    `دستگاه‌های مجاز هم‌زمان: ${sub.simultaneousDevices.toLocaleString('fa-IR')}`,
+  ].join('\n\n');
 }

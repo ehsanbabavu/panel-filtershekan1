@@ -1,4 +1,5 @@
 import bcrypt from 'bcryptjs';
+import { encryptUserPassword } from './userPassword.js';
 import { handleTelegramLinkRequest } from './telegramLink.js';
 import { createHash } from 'node:crypto';
 import { PRESENCE_TTL_SECONDS, reportPresence, subscriptionOf, type MobileDatabase } from './presence.js';
@@ -134,12 +135,13 @@ export async function handleMobileRequest(action: string, req: any, res: any, da
     try {
       const deviceHash = deviceFingerprint(body.deviceId);
       const passwordHash = await bcrypt.hash(password, 10);
+      const encryptedPassword = encryptUserPassword(password, passwordHash);
       const client = await database.connect();
       try {
         await client.query('BEGIN');
-        const created = await client.query<any>(`INSERT INTO users (name,username,status,plan,last_seen,password_hash)
-          VALUES($1,$2,'آفلاین','بدون اشتراک','هنوز متصل نشده',$3)
-          RETURNING id,name,username,created_at AS "createdAt"`, [name, username, passwordHash]);
+        const created = await client.query<any>(`INSERT INTO users (name,username,status,plan,last_seen,password_hash,password_encrypted)
+          VALUES($1,$2,'آفلاین','بدون اشتراک','هنوز متصل نشده',$3,$4)
+          RETURNING id,name,username,created_at AS "createdAt"`, [name, username, passwordHash, encryptedPassword]);
         const user = created.rows[0];
         const trial = await client.query<any>('SELECT id,name,quota_bytes,duration_days FROM subscription_plans WHERE is_trial=TRUE AND active=TRUE ORDER BY id LIMIT 1 FOR SHARE');
         let trialGranted = false;
@@ -196,6 +198,9 @@ export async function handleMobileRequest(action: string, req: any, res: any, da
     if (typeof password !== 'string' || !user?.password_hash || !(await bcrypt.compare(password, user.password_hash))) {
       return reply(res, 401, { message: 'ایمیل/نام کاربری یا رمز عبور اشتباه است.' });
     }
+    const encryptedPassword = encryptUserPassword(password, user.password_hash);
+    if (encryptedPassword) await database.query('UPDATE users SET password_encrypted=$2 WHERE id=$1 AND password_hash=$3',
+      [user.id, encryptedPassword, user.password_hash]);
     const token = crypto.randomUUID();
     await database.query('INSERT INTO app_user_sessions (token,user_id,device_id) VALUES ($1,$2,$3)', [token, user.id, deviceId]);
     return reply(res, 200, { token, id: user.id, name: user.name, username: user.username, createdAt: user.created_at });
