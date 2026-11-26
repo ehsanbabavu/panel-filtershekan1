@@ -14,7 +14,8 @@ it('emitted Vercel API handlers load with the native Node ESM loader', async () 
   const sources = ['api/mobile.ts', 'api/[...path].ts', 'server/database.ts', 'server/mobile.ts', 'server/presence.ts',
     'server/bluepal.ts', 'server/serviceControl.ts', 'server/proxyImport.ts', 'shared/proxyImport.ts',
     'server/proxyBulk.ts', 'api/proxies/import.ts', 'api/proxies/bulk.ts',
-    'server/subscriptionUsage.ts', 'api/user-subscriptions/reset-usage.ts', 'server/telegram.ts', 'server/telegramMenu.ts', 'server/telegramLink.ts', 'server/userPassword.ts', 'api/telegram.ts'];
+    'server/subscriptionUsage.ts', 'api/user-subscriptions/reset-usage.ts', 'server/telegram.ts', 'server/telegramMenu.ts',
+    'server/telegramSupport.ts', 'server/telegramLink.ts', 'server/userPassword.ts', 'api/telegram.ts'];
   for (const source of sources) {
     const code = await readFile(join(root, source), 'utf8');
     const compiled = ts.transpileModule(code, {

@@ -69,7 +69,7 @@ describe('Telegram identity linking and live subscription status through HTTP', 
   });
   beforeEach(async () => {
     updateId = 1000;
-    await db().query('DELETE FROM telegram_connection_codes; DELETE FROM telegram_user_links; DELETE FROM telegram_messages');
+    await db().query('DELETE FROM telegram_connection_codes; DELETE FROM telegram_user_links; DELETE FROM telegram_webhook_updates');
     await db().query(`UPDATE telegram_settings SET bot_id=$1,bot_username='panel_link_test_bot',enabled=TRUE,webhook_secret=$2 WHERE id=1`, [botId, secret]);
     await db().query(`UPDATE users SET blocked=FALSE,subscription_started_at=NOW(),subscription_expires_at=NOW()+INTERVAL '7 days',
       subscription_quota_bytes=10737418240,subscription_used_bytes=2147483648 WHERE id=ANY($1::bigint[])`, [[userA, userB]]);
@@ -294,7 +294,7 @@ describe('Telegram identity linking and live subscription status through HTTP', 
     try { assert.equal((await webhook(next)).status, 503); }
     finally { await db().query('ALTER TABLE telegram_connection_codes DROP CONSTRAINT reject_test_codes'); }
     assert.equal((await db().query<any>('SELECT code_hash FROM telegram_connection_codes')).rows[0].code_hash, hash(first.code));
-    assert.equal((await db().query('SELECT 1 FROM telegram_messages WHERE update_id=$1', [next.update_id])).rows.length, 0);
+    assert.equal((await db().query('SELECT 1 FROM telegram_webhook_updates WHERE update_id=$1', [next.update_id])).rows.length, 0);
     assert.equal((await webhook(next)).body.method, 'sendMessage');
   });
 

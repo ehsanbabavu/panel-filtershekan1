@@ -265,7 +265,7 @@ export default function TelegramChatView({ token, onNotify, onOpenSettings }: {
         <div className="chat-empty">
           <div className="chat-empty-icon"><MessageCircle size={22}/></div>
           <b>پشتیبانی تلگرام</b>
-          {connected && <span>وقتی کاربر به ربات پیام بدهد، گفت‌وگو اینجا نمایش داده می‌شود.</span>}
+          {connected && <span>وقتی کاربر در بخش «پشتیبانی» ربات پیام بفرستد، گفت‌وگو اینجا نمایش داده می‌شود.</span>}
         </div>}
     </section>
   </div>;
