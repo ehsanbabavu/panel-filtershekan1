@@ -2,8 +2,8 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import type { MobileDatabase } from './presence.js';
 import { telegramIdentity } from './telegramLink.js';
 import { createTelegramMenuReply, telegramMenuAction } from './telegramMenu.js';
-
-class TelegramError extends Error {}
+import { createTelegramClient, TelegramError } from './telegramApi.js';
+import { createTelegramChannelPublisher } from './telegramChannel.js';
 
 function chatIdOf(value: unknown) {
   const id = typeof value === 'string' || typeof value === 'number' ? String(value) : '';
@@ -38,22 +38,8 @@ function secretMatches(expected: string, supplied: string) {
 }
 
 export function createTelegramHandler(database: MobileDatabase, initialize: () => Promise<void>, telegramFetch: typeof fetch = fetch) {
-  async function callTelegram(token: string, method: string, body: unknown = {}) {
-    let response: Response;
-    try {
-      response = await telegramFetch(`https://api.telegram.org/bot${token}/${method}`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-        signal: AbortSignal.timeout(12000),
-      });
-    } catch { throw new TelegramError('ارتباط با تلگرام برقرار نشد. دوباره تلاش کنید.'); }
-    let payload: any;
-    try { payload = await response.json(); } catch { throw new TelegramError('پاسخ تلگرام معتبر نیست.'); }
-    if (!response.ok || !payload.ok) {
-      const description = String(payload.description || 'درخواست ناموفق بود.').split(token).join('[توکن پنهان]');
-      throw new TelegramError('تلگرام درخواست را نپذیرفت: ' + description.slice(0, 500));
-    }
-    return payload.result;
-  }
+  const callTelegram = createTelegramClient(telegramFetch);
+  const channel = createTelegramChannelPublisher(database, initialize, { telegramFetch });
 
   return async function handler(req: any, res: any) {
     res.setHeader('Cache-Control', 'no-store');
@@ -63,6 +49,7 @@ export function createTelegramHandler(database: MobileDatabase, initialize: () =
     if (req.method === 'OPTIONS') return res.status(204).end();
     const url = new URL(req.url || '/api/telegram', 'http://localhost');
     const action = String(req.query?.action || url.searchParams.get('action') || 'settings');
+    if (action.startsWith('channel-') || url.pathname === '/api/telegram/channel/scheduled') return channel.handle(req, res);
     const method = String(req.method || 'GET').toUpperCase();
     const reply = (status: number, body: unknown) => res.status(status).json(body);
     try {

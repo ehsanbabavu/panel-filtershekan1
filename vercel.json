@@ -1,5 +1,15 @@
 {
+  "functions": {
+    "api/telegram.ts": { "maxDuration": 60 }
+  },
+  "crons": [
+    { "path": "/api/telegram/channel/scheduled", "schedule": "30 16 * * *" }
+  ],
   "rewrites": [
+    {
+      "source": "/api/telegram/channel/scheduled",
+      "destination": "/api/telegram?action=channel-scheduled"
+    },
     {
       "source": "/dashboard",
       "destination": "/"
@@ -38,6 +48,10 @@
     },
     {
       "source": "/telegram/chat",
+      "destination": "/"
+    },
+    {
+      "source": "/telegram/channel",
       "destination": "/"
     }
   ]
