@@ -10,8 +10,6 @@ export function channelMessage(value: unknown, limit: number, label: string) {
   return message;
 }
 
-export function avalaiKey(env: NodeJS.ProcessEnv) { return env.AVALAI_API_KEY?.trim() || ''; }
-
 export function httpsUrl(value: string) {
   try {
     const url = new URL(value);
@@ -21,10 +19,9 @@ export function httpsUrl(value: string) {
 
 export async function generateChannelMessage({ model, topic, source, sourceUrl, recent }: {
   model: string; topic: string; source?: string; sourceUrl?: string; recent?: string[];
-}, env: NodeJS.ProcessEnv, request: typeof fetch) {
-  const apiKey = avalaiKey(env);
-  if (!apiKey) throw new ChannelError(409, 'کلید AvalAI در محیط سرور تنظیم نشده است.');
-  const baseUrl = httpsUrl((env.AVALAI_BASE_URL?.trim() || 'https://api.avalai.ir/v1').replace(/\/+$/, ''));
+}, { apiKey, baseUrl: configuredBaseUrl }: { apiKey: string; baseUrl?: string }, request: typeof fetch) {
+  if (!apiKey) throw new ChannelError(409, 'کلید AvalAI را از بخش «تلگرام ← تنظیمات» ثبت کنید.');
+  const baseUrl = httpsUrl((configuredBaseUrl?.trim() || 'https://api.avalai.ir/v1').replace(/\/+$/, ''));
   if (!baseUrl || baseUrl.search || baseUrl.hash) {
     throw new ChannelError(409, 'آدرس سرویس AvalAI در محیط سرور معتبر نیست.');
   }

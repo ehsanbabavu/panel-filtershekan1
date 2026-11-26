@@ -53,6 +53,10 @@
     {
       "source": "/telegram/channel",
       "destination": "/"
+    },
+    {
+      "source": "/telegram/settings",
+      "destination": "/"
     }
   ]
 }

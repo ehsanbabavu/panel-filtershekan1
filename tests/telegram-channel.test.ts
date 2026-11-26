@@ -20,6 +20,7 @@ describe('Telegram channel publishing', () => {
   let invalidAi = false;
   const sent: { chat_id: string; text: string }[] = [];
   const prompts: any[] = [];
+  const aiAuthorization: (string | null)[] = [];
   const channelId = '-1001234567890';
   const adminToken = 'fixture-admin-session';
   const botToken = '123456789:fixture-bot-token';
@@ -47,7 +48,7 @@ describe('Telegram channel publishing', () => {
 
   const aiFetch: typeof fetch = async (url, options) => {
     assert.equal(String(url), 'https://api.avalai.ir/v1/chat/completions');
-    assert.equal(new Headers(options?.headers).get('authorization'), `Bearer ${env.AVALAI_API_KEY}`);
+    aiAuthorization.push(new Headers(options?.headers).get('authorization'));
     prompts.push(JSON.parse(String(options?.body)));
     return Response.json({ choices: [{ message: { content: invalidAi ? 'invalid' : JSON.stringify({ text: 'یک نکتهٔ کاربردی' }) } }] });
   };
@@ -109,12 +110,28 @@ describe('Telegram channel publishing', () => {
     const preview = await request('preview', 'POST', brief);
     assert.equal(preview.status, 200);
     assert.equal(preview.data.text, 'یک نکتهٔ کاربردی\n\nمنبع: https://example.com/news');
+    assert.equal(aiAuthorization.at(-1), `Bearer ${env.AVALAI_API_KEY}`);
     assert.equal(prompts.at(-1).model, settings.model);
     assert.equal(JSON.parse(prompts.at(-1).messages[1].content).متن_منبع, brief.source);
     assert.equal(sent.length, 0);
     invalidAi = true;
     assert.equal((await request('preview', 'POST', brief)).status, 502);
     invalidAi = false;
+  });
+
+  it('lets only administrators save an AvalAI key and exposes only its status', async () => {
+    const fixture = 'fixture-panel-avalai-key';
+    assert.equal((await request('ai-settings', 'GET', undefined, 'invalid')).status, 401);
+    assert.equal((await request('ai-settings', 'PUT', { apiKey: fixture }, 'invalid')).status, 401);
+    assert.deepEqual((await request('ai-settings')).data, { configured: true, saved: false });
+    const stored = await request('ai-settings', 'PUT', { apiKey: fixture });
+    assert.equal(stored.status, 200);
+    assert.deepEqual(stored.data, { configured: true, saved: true });
+    assert.equal((await request('ai-settings', 'PUT', { apiKey: 'invalid key' })).status, 400);
+    assert.deepEqual((await request('ai-settings')).data, stored.data);
+    assert.ok(!JSON.stringify((await request()).data).includes(fixture));
+    assert.equal((await request('preview', 'POST', settings)).status, 200);
+    assert.equal(aiAuthorization.at(-1), 'Bearer ' + fixture);
   });
 
   it('publishes to the saved numeric destination and deduplicates repeat submissions', async () => {
@@ -149,6 +166,7 @@ describe('Telegram channel publishing', () => {
     assert.equal((await runScheduled()).status, 'not-due');
     const outcomes = (await Promise.all([scheduled(), scheduled()])).map(result => result.data.status);
     assert.deepEqual(outcomes.sort(), ['already-processed', 'sent']);
+    assert.equal(aiAuthorization.at(-1), 'Bearer fixture-panel-avalai-key');
     assert.equal(sent.length, 4);
     date = new Date('2026-11-27T16:30:00Z');
     assert.equal((await scheduled()).data.status, 'sent');

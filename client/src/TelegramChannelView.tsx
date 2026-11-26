@@ -33,7 +33,9 @@ async function channelRequest<T>(token: string, action: string, method = 'GET', 
   return result;
 }
 
-export default function TelegramChannelView({ token, onNotify }: { token: string; onNotify: (message: string) => void }) {
+export default function TelegramChannelView({ token, onNotify, onOpenSettings }: {
+  token: string; onNotify: (message: string) => void; onOpenSettings: () => void;
+}) {
   const [panel, setPanel] = useState<ChannelPanel | null>(null);
   const [form, setForm] = useState({ target: '', topic: '', model: '', automatic: false });
   const [draft, setDraft] = useState('');
@@ -145,7 +147,10 @@ export default function TelegramChannelView({ token, onNotify }: { token: string
             <input dir="ltr" value={form.model} onChange={event => setForm({ ...form, model: event.target.value })}
               placeholder="gpt-5-mini" maxLength={100} disabled={busyOrLoading}/>
           </label>
-          {panel && !panel.aiConfigured && <p className="telegram-hint">برای تولید متن، کلید AvalAI را در تنظیمات سرور وارد کنید.</p>}
+          {panel && !panel.aiConfigured && <div className="telegram-connection-notice">
+            <span>برای تولید متن، کلید AvalAI را ثبت کنید.</span>
+            <button type="button" className="soft-btn" onClick={onOpenSettings}>تنظیمات تلگرام</button>
+          </div>}
           {panel && !panel.schedulerConfigured && <p className="telegram-hint">برای انتشار خودکار، کلید زمان‌بندی Vercel را تنظیم کنید.</p>}
           <label className="telegram-channel-toggle">
             <input type="checkbox" checked={form.automatic} onChange={event => setForm({ ...form, automatic: event.target.checked })}
