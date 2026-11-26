@@ -15,6 +15,7 @@ describe('Telegram connection and webhook inbox', () => {
   let remoteUrl: string;
   let failMethod: string;
   let remoteError: string;
+  let nextMessageId: number;
   const adminToken = 'telegram-test-admin';
   const botToken = '123456789:abcdefghijklmnopqrstuvwxyz0123456789';
   const webhookUrl = 'https://panel.example.com/api/telegram?action=webhook';
@@ -30,12 +31,14 @@ describe('Telegram connection and webhook inbox', () => {
     else if (method === 'setWebhook') remoteUrl = body.url;
     else if (method === 'deleteWebhook') remoteUrl = '';
     else if (method === 'getWebhookInfo') result = { url: remoteUrl, pending_update_count: 2, last_error_message: '', last_error_date: undefined };
-    else if (method !== 'getMe') throw new Error('Unexpected Telegram method: ' + method);
+    else if (method === 'sendMessage') result = { message_id: nextMessageId++, date: 1795540005, chat: { id: Number(body.chat_id) } };
+    else if (method !== 'deleteMessage') throw new Error('Unexpected Telegram method: ' + method);
     return new Response(JSON.stringify({ ok: true, result }), { status: 200 });
   }) as typeof fetch;
 
-  async function request(action: string, method = 'GET', body?: unknown, token = adminToken, fallback = false) {
-    const response = await fetch(base + (fallback ? '/fallback' : '') + '/api/telegram?action=' + action, {
+  async function request(action: string, method = 'GET', body?: unknown, token = adminToken, fallback = false, query?: Record<string, string>) {
+    const params = new URLSearchParams({ action, ...query });
+    const response = await fetch(base + (fallback ? '/fallback' : '') + '/api/telegram?' + params, {
       method, headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}) },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
@@ -73,7 +76,8 @@ describe('Telegram connection and webhook inbox', () => {
     base = 'http://127.0.0.1:' + address.port;
   });
   beforeEach(async () => {
-    calls = []; remoteUrl = ''; failMethod = ''; remoteError = '';
+    calls = []; remoteUrl = ''; failMethod = ''; remoteError = ''; nextMessageId = 1000;
+    await postgres.database.query('DELETE FROM telegram_chat_messages');
     await postgres.database.query('DELETE FROM telegram_messages');
     await postgres.database.query(`UPDATE telegram_settings SET bot_token='',webhook_url='',webhook_secret='',enabled=FALSE,
       bot_id=NULL,bot_username='',bot_name='',last_received_at=NULL WHERE id=1`);
@@ -87,8 +91,9 @@ describe('Telegram connection and webhook inbox', () => {
     const initial = await request('settings');
     assert.equal(initial.code, 200); assert.equal(initial.body.tokenConfigured, false); assert.equal(initial.body.enabled, false);
     assert.equal(initial.headers.get('cache-control'), 'no-store');
-    for (const action of ['settings', 'messages', 'status', 'connect', 'disconnect']) {
-      assert.equal((await request(action, action === 'connect' || action === 'disconnect' ? 'POST' : 'GET', undefined, '')).code, 401);
+    for (const action of ['settings', 'messages', 'status', 'connect', 'disconnect', 'chats', 'chat', 'send', 'delete-message']) {
+      const method = ['connect', 'disconnect', 'send', 'delete-message'].includes(action) ? 'POST' : 'GET';
+      assert.equal((await request(action, method, undefined, '')).code, 401);
       assert.equal((await request(action, 'GET', undefined, 'invalid')).code, 401);
     }
     assert.equal((await request('connect', 'POST')).code, 400);
@@ -191,6 +196,114 @@ describe('Telegram connection and webhook inbox', () => {
   });
 
   const privateUpdate = (id: number, text: string) => update(id, { text, chat: { id: 456789, type: 'private' } });
+  const privateChat = (botId: unknown) => ({ botId: String(botId), chatId: '456789' });
+  const thread = (chat: ReturnType<typeof privateChat>, fallback = false) => request('chat', 'GET', undefined, adminToken, fallback, chat);
+
+  it('receives a support question and saves the admin reply sent to the same private Telegram chat', async () => {
+    const row = await connect();
+    const chat = privateChat(row.bot_id);
+    assert.equal((await webhook(privateUpdate(210, 'پشتیبانی'), row.webhook_secret)).body.chat_id, chat.chatId);
+    const question = privateUpdate(211, 'برای تمدید راهنمایی می‌خواهم');
+    assert.equal((await webhook(question, row.webhook_secret, true)).code, 200);
+    assert.deepEqual((await webhook(question, row.webhook_secret)).body, { ok: true });
+    await webhook(update(212, { chat: { id: 789012, type: 'private' }, from: { id: 789012, first_name: 'کاربر دوم' } }), row.webhook_secret);
+
+    const inbox = await request('chats');
+    assert.equal(inbox.code, 200);
+    assert.equal(inbox.body.botId, chat.botId);
+    assert.equal(inbox.body.connected, true);
+    assert.equal(inbox.body.chats.find((item: any) => item.chatId === chat.chatId).lastMessage, question.message.text);
+    const text = 'سلام، از بخش تعرفه‌ها می‌توانید اشتراک را تمدید کنید.';
+    const reply = await request('send', 'POST', { ...chat, message: ' ' + text + ' ' });
+    assert.equal(reply.code, 201);
+    assert.deepEqual(calls.at(-1), { method: 'sendMessage', body: { chat_id: chat.chatId, text } });
+    assert.equal(reply.body.direction, 'outgoing');
+    assert.equal(reply.body.text, text);
+    assert.equal((await request('chats')).body.chats[0].lastMessage, text);
+
+    const history = await thread(chat, true);
+    assert.equal(history.code, 200);
+    assert.deepEqual(history.body.map((message: any) => [message.direction, message.text]), [
+      ['incoming', 'پشتیبانی'], ['incoming', question.message.text], ['outgoing', text],
+    ]);
+    assert.equal((await thread({ ...chat, chatId: '789012' })).body.length, 1);
+  });
+
+  it('validates the active bot and known private chat before sending and keeps failed sends out of the history', async () => {
+    const row = await connect();
+    const chat = privateChat(row.bot_id);
+    await webhook(update(), row.webhook_secret);
+    await webhook(privateUpdate(211, 'سلام'), row.webhook_secret);
+
+    const payload = { ...chat, message: 'پاسخ پشتیبانی' };
+    assert.equal((await request('send', 'POST', { ...payload, botId: '999' })).code, 409);
+    assert.equal((await thread({ ...chat, botId: '999' })).code, 409);
+    assert.equal((await request('send', 'POST', { ...payload, chatId: '789012' })).code, 404);
+    assert.equal((await request('send', 'POST', { ...payload, chatId: '-100123456789' })).code, 400);
+    for (const message of [{ text: 'پاسخ' }, ' ', 'a'.repeat(4097)]) {
+      assert.equal((await request('send', 'POST', { ...payload, message })).code, 400);
+    }
+    assert.ok(calls.every(call => call.method !== 'sendMessage'));
+
+    failMethod = 'sendMessage'; remoteError = 'Forbidden: bot was blocked by the user';
+    assert.equal((await request('send', 'POST', payload)).code, 502);
+    assert.deepEqual((await thread(chat)).body.map((message: any) => message.direction), ['incoming']);
+    assert.equal((await request('disconnect', 'POST')).code, 200);
+    assert.equal((await request('chats')).body.connected, false);
+    assert.equal((await request('send', 'POST', payload)).code, 409);
+    assert.equal(calls.filter(call => call.method === 'sendMessage').length, 1);
+  });
+
+  it('distinguishes a Telegram delivery from a failure to write the delivered reply to history', async () => {
+    const row = await connect();
+    await webhook(privateUpdate(211, 'سلام'), row.webhook_secret);
+    await postgres.database.query("ALTER TABLE telegram_chat_messages ADD CONSTRAINT test_incoming_only CHECK (direction='incoming')");
+    try {
+      const reply = await request('send', 'POST', { ...privateChat(row.bot_id), message: 'سلام' });
+      assert.equal(reply.code, 202);
+      assert.match(reply.body.notice, /در تلگرام ارسال شد/);
+      assert.equal(reply.body.direction, 'outgoing');
+      assert.equal(calls.filter(call => call.method === 'sendMessage').length, 1);
+    } finally {
+      await postgres.database.query('ALTER TABLE telegram_chat_messages DROP CONSTRAINT test_incoming_only');
+    }
+  });
+
+  it('includes historical messages, and keeps the latest edit when Telegram delivers updates out of order', async () => {
+    const row = await connect();
+    const chat = privateChat(row.bot_id);
+    await postgres.database.query(`INSERT INTO telegram_messages(bot_id,update_id,message_id,chat_id,chat_title,text,content_type,edited,sent_at)
+      VALUES($1,10,15,$2,'کاربر قدیمی','کپشن ویرایش‌شده','photo',TRUE,to_timestamp(1795540000)),
+        ($1,9,15,$2,'کاربر قدیمی','کپشن اولیه','photo',FALSE,to_timestamp(1795540000)),
+        (999,11,17,$2,'ربات دیگر','پیام ربات دیگر','text',FALSE,to_timestamp(1795540000))`, [row.bot_id, chat.chatId]);
+    await initializeSchema(postgres.database);
+    await initializeSchema(postgres.database);
+    const prior = await thread(chat);
+    assert.deepEqual(prior.body.map((message: any) => [message.text, message.contentType]), [['کپشن ویرایش‌شده', 'photo']]);
+    const newer = privateUpdate(20, 'متن تازه');
+    assert.equal((await webhook({ update_id: 21, edited_message: newer.message }, row.webhook_secret)).code, 200);
+    assert.equal((await webhook({ ...newer, message: { ...newer.message, text: 'متن اولیه' } }, row.webhook_secret)).code, 200);
+    assert.equal((await thread(chat)).body.at(-1).text, 'متن تازه');
+  });
+
+  it('keeps a deleted Telegram message hidden even if a later update edits it', async () => {
+    const row = await connect();
+    const chat = privateChat(row.bot_id);
+    const incoming = privateUpdate(211, 'متن اولیه');
+    await webhook(incoming, row.webhook_secret);
+    const payload = { ...chat, messageId: '211' };
+    assert.equal((await request('delete-message', 'POST', payload)).code, 200);
+    assert.equal((await request('delete-message', 'POST', payload)).code, 200);
+    assert.deepEqual(calls.filter(call => call.method === 'deleteMessage'), [
+      { method: 'deleteMessage', body: { chat_id: chat.chatId, message_id: 211 } },
+    ]);
+    await webhook({ update_id: 212, edited_message: { ...incoming.message, text: 'متن ویرایش‌شده' } }, row.webhook_secret);
+    const history = await thread(chat);
+    assert.equal(history.body.length, 1);
+    assert.equal(history.body[0].deleted, true);
+    assert.equal(history.body[0].text, '');
+    assert.ok((await request('messages')).body.every((message: any) => message.text === ''));
+  });
 
   it('shows the four persistent bottom menu buttons on start and menu commands', async () => {
     const row = await connect();

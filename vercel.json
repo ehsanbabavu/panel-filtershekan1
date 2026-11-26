@@ -35,6 +35,10 @@
     {
       "source": "/telegram",
       "destination": "/"
+    },
+    {
+      "source": "/telegram/chat",
+      "destination": "/"
     }
   ]
 }

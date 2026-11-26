@@ -16,7 +16,7 @@ export async function createTelegramMenuReply(database: Pick<MobileDatabase, 'qu
   if (/^\/(start|menu)(?:@[A-Za-z0-9_]+)?(?:\s|$)/i.test(command)) {
     text = 'سلام! از منوی پایین یک گزینه را انتخاب کنید.';
   } else if (command === 'پشتیبانی') {
-    text = 'پیام یا سؤال خود را همین‌جا بفرستید. پیام شما در پنل پشتیبانی ثبت می‌شود.';
+    text = 'پیام یا سؤال خود را همین‌جا بفرستید. پاسخ پشتیبانی را هم در همین گفت‌وگو دریافت می‌کنید.';
   } else if (command === 'اتصال به برنامه') {
     const identity = telegramIdentity(message);
     if (!identity) return null;
