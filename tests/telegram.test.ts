@@ -55,6 +55,9 @@ describe('Telegram connection and webhook inbox', () => {
     message_id: id, date: 1795540000, chat: { id: -100123456789, title: 'گروه آزمایشی' },
     from: { id: 456789, first_name: 'کاربر', last_name: 'آزمایشی', username: 'test_user' }, text: 'سلام از تلگرام', ...extra,
   } });
+  const privateUpdate = (id: number, text: string, chatId = 456789, extra: Record<string, unknown> = {}) =>
+    update(id, { text, chat: { id: chatId, type: 'private' },
+      from: { id: chatId, first_name: 'کاربر', last_name: 'آزمایشی', username: 'test_user' }, ...extra });
   async function webhook(body: unknown, secret: string, fallback = false) {
     const response = await fetch(base + (fallback ? '/fallback' : '') + '/api/telegram?action=webhook', {
       method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Telegram-Bot-Api-Secret-Token': secret }, body: JSON.stringify(body),
@@ -77,8 +80,7 @@ describe('Telegram connection and webhook inbox', () => {
   });
   beforeEach(async () => {
     calls = []; remoteUrl = ''; failMethod = ''; remoteError = ''; nextMessageId = 1000;
-    await postgres.database.query('DELETE FROM telegram_chat_messages');
-    await postgres.database.query('DELETE FROM telegram_messages');
+    await postgres.database.query('DELETE FROM telegram_chat_messages; DELETE FROM telegram_messages; DELETE FROM telegram_webhook_updates');
     await postgres.database.query(`UPDATE telegram_settings SET bot_token='',webhook_url='',webhook_secret='',enabled=FALSE,
       bot_id=NULL,bot_username='',bot_name='',last_received_at=NULL WHERE id=1`);
   });
@@ -131,27 +133,38 @@ describe('Telegram connection and webhook inbox', () => {
 
   it('accepts authentic messages without admin login and deduplicates Telegram retries', async () => {
     const row = await connect();
-    assert.equal((await webhook(update(), '')).code, 401);
-    assert.equal((await webhook(update(), 'wrong')).code, 401);
-    assert.equal((await webhook(update(), row.webhook_secret)).code, 200);
-    assert.equal((await webhook(update(), row.webhook_secret, true)).code, 200);
+    const question = privateUpdate(100, 'سلام از تلگرام');
+    assert.equal((await webhook(question, '')).code, 401);
+    assert.equal((await webhook(question, 'wrong')).code, 401);
+    await webhook(privateUpdate(99, 'پشتیبانی'), row.webhook_secret);
+    assert.equal((await webhook(question, row.webhook_secret)).code, 200);
+    assert.equal((await webhook(question, row.webhook_secret, true)).code, 200);
     const result = await request('messages'); assert.equal(result.code, 200); assert.equal(result.body.length, 1);
     assert.equal(result.body[0].senderName, 'کاربر آزمایشی'); assert.equal(result.body[0].senderUsername, 'test_user');
-    assert.equal(result.body[0].chatId, '-100123456789'); assert.equal(result.body[0].text, 'سلام از تلگرام');
+    assert.equal(result.body[0].chatId, '456789'); assert.equal(result.body[0].text, 'سلام از تلگرام');
     assert.equal(new Date(result.body[0].sentAt).getTime(), 1795540000 * 1000);
     assert.ok((await settings()).last_received_at);
     assert.deepEqual((await request('messages', 'GET', undefined, adminToken, true)).body, result.body);
     assert.equal((await request('webhook')).code, 405);
   });
 
-  it('handles captions, edited messages and channel posts without downloading media', async () => {
+  it('stores support captions and edits while ignoring channel posts and edits to other messages', async () => {
     const row = await connect();
-    await webhook(update(101, { text: undefined, photo: [{ file_id: 'photo-id' }], caption: 'توضیح تصویر' }), row.webhook_secret);
-    await webhook({ update_id: 102, edited_message: { ...update(102).message, text: '<script>alert(1)</script>' } }, row.webhook_secret);
-    await webhook({ update_id: 103, channel_post: { message_id: 10, date: 1795540000, chat: { id: -100777, title: 'کانال' }, voice: { file_id: 'voice' } } }, row.webhook_secret);
+    const beforeSupport = privateUpdate(99, 'پیام خارج از پشتیبانی');
+    await webhook(beforeSupport, row.webhook_secret);
+    await webhook(privateUpdate(100, 'پشتیبانی'), row.webhook_secret);
+    await webhook(privateUpdate(101, '', 456789, { text: undefined, photo: [{ file_id: 'photo-id' }], caption: 'توضیح تصویر' }), row.webhook_secret);
+    const question = privateUpdate(102, 'پیام پشتیبانی');
+    await webhook(question, row.webhook_secret);
+    const service = privateUpdate(107, '', 456789, { text: undefined, message_auto_delete_timer_changed: { message_auto_delete_time: 60 } });
+    assert.deepEqual((await webhook(service, row.webhook_secret)).body, { ok: true });
+    await webhook(privateUpdate(103, '/menu'), row.webhook_secret);
+    await webhook({ update_id: 104, edited_message: { ...question.message, text: '<script>alert(1)</script>' } }, row.webhook_secret);
+    await webhook({ update_id: 105, edited_message: { ...beforeSupport.message, text: 'متن ویرایش‌شده خارج از پشتیبانی' } }, row.webhook_secret);
+    await webhook({ update_id: 106, channel_post: { message_id: 10, date: 1795540000, chat: { id: -100777, title: 'کانال', type: 'channel' }, voice: { file_id: 'voice' } } }, row.webhook_secret);
     const rows = (await request('messages')).body;
-    assert.equal(rows.length, 3); assert.equal(rows[0].text, ''); assert.equal(rows[0].contentType, 'voice');
-    assert.equal(rows[1].edited, true); assert.equal(rows[1].text, '<script>alert(1)</script>');
+    assert.equal(rows.length, 3);
+    assert.equal(rows[0].edited, true); assert.equal(rows[0].text, '<script>alert(1)</script>');
     assert.equal(rows[2].text, 'توضیح تصویر'); assert.equal(rows[2].contentType, 'photo');
     assert.ok(calls.every(call => ['getMe', 'setWebhook'].includes(call.method)));
   });
@@ -166,7 +179,9 @@ describe('Telegram connection and webhook inbox', () => {
   });
 
   it('disconnects while preserving inbox history and refuses disabled webhook requests', async () => {
-    const row = await connect(); await webhook(update(), row.webhook_secret);
+    const row = await connect();
+    await webhook(privateUpdate(99, 'پشتیبانی'), row.webhook_secret);
+    await webhook(privateUpdate(100, 'سلام'), row.webhook_secret);
     const result = await request('disconnect', 'POST'); assert.equal(result.code, 200); assert.equal(result.body.enabled, false);
     assert.equal(calls.at(-1)?.method, 'deleteWebhook'); assert.equal(calls.at(-1)?.body.drop_pending_updates, false);
     assert.equal((await request('messages')).body.length, 1);
@@ -186,18 +201,66 @@ describe('Telegram connection and webhook inbox', () => {
 
   it('retains at most 100 inbox entries in the response and isolates another bot history', async () => {
     const row = await connect();
-    await postgres.database.query(`INSERT INTO telegram_messages(bot_id,update_id,message_id,chat_id,text,sent_at)
-      SELECT $1,generate_series,generate_series,'123','پیام',NOW() FROM generate_series(1,110)`, [row.bot_id]);
-    await postgres.database.query(`INSERT INTO telegram_messages(bot_id,update_id,message_id,chat_id,text,sent_at)
-      VALUES(999,200,200,'123','ربات دیگر',NOW())`);
+    await postgres.database.query(`WITH incoming AS (
+      INSERT INTO telegram_messages(bot_id,update_id,message_id,chat_id,text,sent_at)
+        SELECT $1,n,n,'123','پیام',NOW() FROM generate_series(1,110) n
+        UNION ALL SELECT 999,200,200,'123','ربات دیگر',NOW()
+        RETURNING bot_id,chat_id,message_id,text,sent_at
+    )
+    INSERT INTO telegram_chat_messages(bot_id,chat_id,message_id,text,sent_at,direction,is_support)
+      SELECT bot_id,chat_id,message_id,text,sent_at,'incoming',TRUE FROM incoming`, [row.bot_id]);
     const result = await request('messages'); assert.equal(result.body.length, 100);
     assert.ok(result.body.every((message: any) => message.text !== 'ربات دیگر'));
     assert.equal(String(result.body[0].updateId), '110');
   });
 
-  const privateUpdate = (id: number, text: string) => update(id, { text, chat: { id: 456789, type: 'private' } });
   const privateChat = (botId: unknown) => ({ botId: String(botId), chatId: '456789' });
   const thread = (chat: ReturnType<typeof privateChat>, fallback = false) => request('chat', 'GET', undefined, adminToken, fallback, chat);
+
+  it('admits only messages sent through support and exits support for each other menu choice', async () => {
+    const row = await connect();
+    const secret = row.webhook_secret;
+    const outside = await webhook(privateUpdate(200, 'پیام بدون انتخاب پشتیبانی'), secret);
+    assert.match(outside.body.text, /ابتدا «پشتیبانی»/);
+    assert.equal((await webhook(privateUpdate(201, 'پشتیبانی'), secret)).body.method, 'sendMessage');
+    assert.deepEqual((await request('chats')).body.chats, []);
+    assert.match((await webhook(privateUpdate(202, 'پیام کاربر دوم', 789012), secret)).body.text, /ابتدا «پشتیبانی»/);
+
+    const expected: string[] = [];
+    for (const [index, menu] of ['وضعیت اشتراک', 'تعرفه‌ها', 'اتصال به برنامه', '/menu', '/start@panel_test_bot'].entries()) {
+      const id = 210 + index * 4;
+      const question = 'سؤال پشتیبانی ' + index;
+      assert.match((await webhook(privateUpdate(id, question), secret)).body.text, /پشتیبانی دریافت شد/);
+      expected.push(question);
+      const choice = privateUpdate(id + 1, menu);
+      assert.equal((await webhook(choice, secret)).body.method, 'sendMessage');
+      assert.match((await webhook(privateUpdate(id + 2, 'خارج از پشتیبانی'), secret)).body.text, /ابتدا «پشتیبانی»/);
+      assert.equal((await webhook(privateUpdate(id + 3, 'پشتیبانی'), secret)).body.method, 'sendMessage');
+      assert.deepEqual((await webhook(choice, secret)).body, { ok: true });
+    }
+    assert.deepEqual((await thread(privateChat(row.bot_id))).body.map((message: any) => message.text), expected);
+    const stored = await postgres.database.query('SELECT text FROM telegram_messages ORDER BY id');
+    assert.deepEqual(stored.rows, expected.map(text => ({ text })));
+  });
+
+  it('uses the menu order within the chat when Telegram delivers an exit or a question late', async () => {
+    const row = await connect();
+    const secret = row.webhook_secret;
+    const open = privateUpdate(200, 'پشتیبانی');
+    await webhook(open, secret);
+    await webhook(privateUpdate(201, 'سؤال اول'), secret);
+    await webhook(privateUpdate(205, 'پیام پس از خروج'), secret);
+    await webhook(privateUpdate(210, 'پشتیبانی'), secret);
+    await webhook(privateUpdate(211, 'سؤال بعد از ورود دوباره'), secret);
+
+    await webhook(privateUpdate(204, '/menu'), secret);
+    await webhook(privateUpdate(202, 'سؤال با تحویل دیرتر'), secret);
+    await webhook(privateUpdate(206, 'پیام خارج از پشتیبانی'), secret);
+    assert.deepEqual((await webhook(open, secret)).body, { ok: true });
+    assert.deepEqual((await thread(privateChat(row.bot_id))).body.map((message: any) => message.text), [
+      'سؤال اول', 'سؤال با تحویل دیرتر', 'سؤال بعد از ورود دوباره',
+    ]);
+  });
 
   it('receives a support question and saves the admin reply sent to the same private Telegram chat', async () => {
     const row = await connect();
@@ -206,7 +269,8 @@ describe('Telegram connection and webhook inbox', () => {
     const question = privateUpdate(211, 'برای تمدید راهنمایی می‌خواهم');
     assert.equal((await webhook(question, row.webhook_secret, true)).code, 200);
     assert.deepEqual((await webhook(question, row.webhook_secret)).body, { ok: true });
-    await webhook(update(212, { chat: { id: 789012, type: 'private' }, from: { id: 789012, first_name: 'کاربر دوم' } }), row.webhook_secret);
+    await webhook(privateUpdate(212, 'پشتیبانی', 789012), row.webhook_secret);
+    await webhook(privateUpdate(213, 'سؤال کاربر دوم', 789012), row.webhook_secret);
 
     const inbox = await request('chats');
     assert.equal(inbox.code, 200);
@@ -224,7 +288,7 @@ describe('Telegram connection and webhook inbox', () => {
     const history = await thread(chat, true);
     assert.equal(history.code, 200);
     assert.deepEqual(history.body.map((message: any) => [message.direction, message.text]), [
-      ['incoming', 'پشتیبانی'], ['incoming', question.message.text], ['outgoing', text],
+      ['incoming', question.message.text], ['outgoing', text],
     ]);
     assert.equal((await thread({ ...chat, chatId: '789012' })).body.length, 1);
   });
@@ -233,6 +297,7 @@ describe('Telegram connection and webhook inbox', () => {
     const row = await connect();
     const chat = privateChat(row.bot_id);
     await webhook(update(), row.webhook_secret);
+    await webhook(privateUpdate(210, 'پشتیبانی'), row.webhook_secret);
     await webhook(privateUpdate(211, 'سلام'), row.webhook_secret);
 
     const payload = { ...chat, message: 'پاسخ پشتیبانی' };
@@ -256,6 +321,7 @@ describe('Telegram connection and webhook inbox', () => {
 
   it('distinguishes a Telegram delivery from a failure to write the delivered reply to history', async () => {
     const row = await connect();
+    await webhook(privateUpdate(210, 'پشتیبانی'), row.webhook_secret);
     await webhook(privateUpdate(211, 'سلام'), row.webhook_secret);
     await postgres.database.query("ALTER TABLE telegram_chat_messages ADD CONSTRAINT test_incoming_only CHECK (direction='incoming')");
     try {
@@ -269,26 +335,48 @@ describe('Telegram connection and webhook inbox', () => {
     }
   });
 
-  it('includes historical messages, and keeps the latest edit when Telegram delivers updates out of order', async () => {
+  it('keeps prior support questions and replies while removing menus and other messages from the visible history', async () => {
     const row = await connect();
     const chat = privateChat(row.bot_id);
     await postgres.database.query(`INSERT INTO telegram_messages(bot_id,update_id,message_id,chat_id,chat_title,text,content_type,edited,sent_at)
       VALUES($1,10,15,$2,'کاربر قدیمی','کپشن ویرایش‌شده','photo',TRUE,to_timestamp(1795540000)),
         ($1,9,15,$2,'کاربر قدیمی','کپشن اولیه','photo',FALSE,to_timestamp(1795540000)),
+        ($1,7,13,$2,'کاربر قدیمی','پیام پیش از پشتیبانی','text',FALSE,to_timestamp(1795540000)),
+        ($1,8,14,$2,'کاربر قدیمی','پشتیبانی','text',FALSE,to_timestamp(1795540000)),
+        ($1,11,17,$2,'کاربر قدیمی','تعرفه‌ها','text',FALSE,to_timestamp(1795540000)),
+        ($1,12,18,$2,'کاربر قدیمی','پیام بعد از خروج','text',FALSE,to_timestamp(1795540000)),
         (999,11,17,$2,'ربات دیگر','پیام ربات دیگر','text',FALSE,to_timestamp(1795540000))`, [row.bot_id, chat.chatId]);
+    await postgres.database.query(`INSERT INTO telegram_chat_messages(bot_id,chat_id,message_id,direction,text,sent_at)
+      VALUES($1,$2,16,'outgoing','پاسخ قبلی',to_timestamp(1795540000)),
+        ($1,$2,17,'incoming','تعرفه‌ها',to_timestamp(1795540000)),
+        ($1,$2,18,'incoming','پیام بعد از خروج',to_timestamp(1795540000))`, [row.bot_id, chat.chatId]);
+    await postgres.database.query('ALTER TABLE telegram_chat_messages DROP COLUMN is_support');
     await initializeSchema(postgres.database);
     await initializeSchema(postgres.database);
     const prior = await thread(chat);
-    assert.deepEqual(prior.body.map((message: any) => [message.text, message.contentType]), [['کپشن ویرایش‌شده', 'photo']]);
-    const newer = privateUpdate(20, 'متن تازه');
-    assert.equal((await webhook({ update_id: 21, edited_message: newer.message }, row.webhook_secret)).code, 200);
-    assert.equal((await webhook({ ...newer, message: { ...newer.message, text: 'متن اولیه' } }, row.webhook_secret)).code, 200);
+    assert.deepEqual(prior.body.map((message: any) => [message.text, message.contentType]), [
+      ['کپشن ویرایش‌شده', 'photo'], ['پاسخ قبلی', 'text'],
+    ]);
+    assert.equal((await request('messages')).body.length, 2);
+    assert.deepEqual((await webhook({ ...privateUpdate(8, 'پشتیبانی'), message: { ...privateUpdate(8, 'پشتیبانی').message, message_id: 14 } }, row.webhook_secret)).body, { ok: true });
+    assert.match((await webhook(privateUpdate(19, 'پیام بعد از ارتقا'), row.webhook_secret)).body.text, /ابتدا «پشتیبانی»/);
+  });
+
+  it('keeps the newest edit to an admitted message when edits arrive out of order', async () => {
+    const row = await connect();
+    const chat = privateChat(row.bot_id);
+    await webhook(privateUpdate(19, 'پشتیبانی'), row.webhook_secret);
+    const question = privateUpdate(20, 'متن اولیه');
+    await webhook(question, row.webhook_secret);
+    await webhook({ update_id: 22, edited_message: { ...question.message, text: 'متن تازه' } }, row.webhook_secret);
+    await webhook({ update_id: 21, edited_message: { ...question.message, text: 'ویرایش قبلی' } }, row.webhook_secret);
     assert.equal((await thread(chat)).body.at(-1).text, 'متن تازه');
   });
 
   it('keeps a deleted Telegram message hidden even if a later update edits it', async () => {
     const row = await connect();
     const chat = privateChat(row.bot_id);
+    await webhook(privateUpdate(210, 'پشتیبانی'), row.webhook_secret);
     const incoming = privateUpdate(211, 'متن اولیه');
     await webhook(incoming, row.webhook_secret);
     const payload = { ...chat, messageId: '211' };
@@ -329,7 +417,7 @@ describe('Telegram connection and webhook inbox', () => {
     assert.match(app.body.text, /<code>Ariya[A-Za-z0-9]{10}<\/code>/);
     assert.equal(support.body.parse_mode, undefined);
     assert.equal(message.body.parse_mode, undefined);
-    assert.equal((await request('messages')).body.length, 3);
+    assert.equal((await request('messages')).body.length, 1);
     assert.ok(support.body.reply_markup && message.body.reply_markup && app.body.reply_markup);
   });
 
@@ -354,7 +442,7 @@ describe('Telegram connection and webhook inbox', () => {
       const retry = await webhook(privateUpdate(300 + index, 'اتصال به برنامه'), row.webhook_secret);
       assert.deepEqual(retry.body, { ok: true });
     }
-    assert.equal((await request('messages')).body.length, 20);
+    assert.equal((await request('messages')).body.length, 0);
   });
 
   it('reads current active tariffs in toman and excludes trial and disabled plans', async () => {
@@ -387,7 +475,7 @@ describe('Telegram connection and webhook inbox', () => {
     const row = await connect(); const body = privateUpdate(240, '/start');
     const first = await webhook(body, row.webhook_secret); assert.equal(first.body.method, 'sendMessage');
     const retry = await webhook(body, row.webhook_secret, true); assert.deepEqual(retry.body, { ok: true });
-    assert.equal((await request('messages')).body.length, 1);
+    assert.equal((await request('messages')).body.length, 0);
     assert.ok(calls.every(call => ['getMe', 'setWebhook'].includes(call.method)));
   });
 
@@ -403,7 +491,9 @@ describe('Telegram connection and webhook inbox', () => {
   });
 
   it('keeps schema initialization idempotent and preserves Telegram history', async () => {
-    const row = await connect(); await webhook(update(), row.webhook_secret);
+    const row = await connect();
+    await webhook(privateUpdate(99, 'پشتیبانی'), row.webhook_secret);
+    await webhook(privateUpdate(100, 'سلام'), row.webhook_secret);
     await initializeSchema(postgres.database);
     assert.equal((await settings()).enabled, true); assert.equal((await request('messages')).body.length, 1);
   });

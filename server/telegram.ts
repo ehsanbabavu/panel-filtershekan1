@@ -1,6 +1,7 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import type { MobileDatabase } from './presence.js';
-import { createTelegramMenuReply } from './telegramMenu.js';
+import { telegramIdentity } from './telegramLink.js';
+import { createTelegramMenuReply, telegramMenuAction } from './telegramMenu.js';
 
 class TelegramError extends Error {}
 
@@ -11,6 +12,8 @@ function chatIdOf(value: unknown) {
 
 const botChanged = 'ربات این گفت‌وگو تغییر کرده است. فهرست را به‌روز کنید.';
 const connectBot = 'برای ارسال پیام، ربات تلگرام را از بخش «اتصال ربات» وصل کنید.';
+const telegramMedia = ['photo', 'video', 'voice', 'audio', 'document', 'sticker', 'contact', 'location', 'poll',
+  'animation', 'video_note', 'dice', 'venue', 'game', 'story', 'paid_media', 'checklist'];
 
 function validWebhook(value: unknown) {
   if (typeof value !== 'string' || value.length > 2000) return false;
@@ -78,40 +81,79 @@ export function createTelegramHandler(database: MobileDatabase, initialize: () =
         if (!Number.isSafeInteger(message.message_id) || message.message_id < 1 ||
           !Number.isSafeInteger(message.chat?.id) || !Number.isSafeInteger(message.date) ||
           message.date < 1 || message.date > 8640000000000) return reply(400, { message: 'ساختار پیام تلگرام معتبر نیست.' });
-        const sender = message.from || message.sender_chat || {};
-        const senderName = String([sender.first_name, sender.last_name].filter(value => typeof value === 'string').join(' ') ||
-          sender.title || message.chat.title || 'فرستنده نامشخص').slice(0, 256);
-        const senderUsername = typeof sender.username === 'string' ? sender.username.slice(0, 64) : '';
-        const chatTitle = String(message.chat.title || senderName).slice(0, 256);
-        const chatId = String(message.chat.id);
-        const edited = Boolean(body.edited_message || body.edited_channel_post);
-        const contentType = typeof message.text === 'string' ? 'text' : ['photo', 'video', 'voice', 'audio', 'document', 'sticker', 'contact', 'location', 'poll'].find(key => message[key]) || 'other';
+        const identity = telegramIdentity(message);
+        if (!identity) return reply(200, { ok: true });
+        const chatId = identity.id;
+        const edited = Boolean(body.edited_message);
+        const menu = body.message ? telegramMenuAction(message.text) : null;
+        const senderName = identity.name || 'فرستنده نامشخص';
+        const media = telegramMedia.find(key => message[key]);
+        const hasText = typeof message.text === 'string';
+        if (!hasText && !media && typeof message.caption !== 'string') return reply(200, { ok: true });
+        const contentType = hasText ? 'text' : media || 'other';
         const text = (typeof message.text === 'string' ? message.text : typeof message.caption === 'string' ? message.caption : '').slice(0, 4096);
+        const messageKey = [row.bot_id, chatId, message.message_id];
         const client = await database.connect();
         try {
           await client.query('BEGIN');
-          const inserted = await client.query(`INSERT INTO telegram_messages(bot_id,update_id,message_id,chat_id,chat_title,
-            sender_name,sender_username,text,content_type,edited,sent_at)
-            VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,to_timestamp($11))
-            ON CONFLICT(bot_id,update_id) DO NOTHING RETURNING id`,
-          [row.bot_id, body.update_id, message.message_id, chatId, chatTitle, senderName, senderUsername, text, contentType, edited, message.date]);
-          if (inserted.rowCount) {
+          // Serialize menu changes and message admission with other updates for this bot.
+          const connected = await client.query(`SELECT id FROM telegram_settings
+            WHERE id=1 AND enabled AND bot_id=$1 AND webhook_secret=$2 FOR UPDATE`, [row.bot_id, row.webhook_secret]);
+          if (!connected.rowCount) {
+            await client.query('ROLLBACK');
+            return reply(401, { message: 'وب‌هوک معتبر نیست.' });
+          }
+          const receipt = await client.query(`INSERT INTO telegram_webhook_updates(bot_id,update_id,chat_id,menu_message_id,opens_support)
+            SELECT $1,$2,$3,$4,$5
+            WHERE NOT EXISTS (SELECT 1 FROM telegram_messages WHERE bot_id=$1 AND update_id=$2)
+            ON CONFLICT(bot_id,update_id) DO NOTHING RETURNING 1`,
+          [row.bot_id, body.update_id, menu ? chatId : null, menu ? message.message_id : null, menu ? menu === 'support' : null]);
+          if (!receipt.rowCount) {
+            await client.query('COMMIT');
+            return reply(200, { ok: true });
+          }
+
+          let inSupport = false;
+          if (menu && menu !== 'support') {
+            // If a menu choice arrived late, hide messages from the interval it closed.
+            await client.query(`UPDATE telegram_chat_messages c SET is_support=FALSE
+              WHERE c.bot_id=$1 AND c.chat_id=$2 AND c.message_id>$3 AND c.direction='incoming' AND c.is_support
+                AND NOT EXISTS (SELECT 1 FROM telegram_webhook_updates u
+                  WHERE u.bot_id=c.bot_id AND u.chat_id=c.chat_id AND u.menu_message_id>$3 AND u.menu_message_id<=c.message_id)`,
+            messageKey);
+          } else if (edited) {
+            const original = await client.query(`SELECT 1 FROM telegram_chat_messages
+              WHERE bot_id=$1 AND chat_id=$2 AND message_id=$3 AND direction='incoming' AND is_support AND deleted_at IS NULL FOR UPDATE`,
+            messageKey);
+            inSupport = Boolean(original.rowCount);
+          } else if (!menu) {
+            const entry = (await client.query<{ opens_support: boolean; menu_message_id: string | number }>(`
+              SELECT opens_support,menu_message_id FROM telegram_webhook_updates
+              WHERE bot_id=$1 AND chat_id=$2 AND menu_message_id<=$3
+              ORDER BY menu_message_id DESC LIMIT 1`, messageKey)).rows[0];
+            inSupport = Boolean(entry?.opens_support && Number(entry.menu_message_id) < message.message_id);
+          }
+
+          if (inSupport) {
+            await client.query(`INSERT INTO telegram_messages(bot_id,update_id,message_id,chat_id,chat_title,
+              sender_name,sender_username,text,content_type,edited,sent_at)
+              VALUES($1,$2,$3,$4,$5,$5,$6,$7,$8,$9,to_timestamp($10))`,
+            [row.bot_id, body.update_id, message.message_id, chatId, senderName, identity.username, text, contentType, edited, message.date]);
             await client.query(`INSERT INTO telegram_chat_messages AS current
-              (bot_id,chat_id,message_id,chat_title,sender_name,sender_username,text,direction,sent_at,content_type,edited,update_id)
-              VALUES($1,$2,$3,$4,$5,$6,$7,'incoming',to_timestamp($8),$9,$10,$11)
+              (bot_id,chat_id,message_id,chat_title,sender_name,sender_username,text,direction,sent_at,content_type,edited,update_id,is_support)
+              VALUES($1,$2,$3,$4,$4,$5,$6,'incoming',to_timestamp($7),$8,$9,$10,TRUE)
               ON CONFLICT(bot_id,chat_id,message_id) DO UPDATE SET
                 chat_title=EXCLUDED.chat_title,sender_name=EXCLUDED.sender_name,sender_username=EXCLUDED.sender_username,
                 text=EXCLUDED.text,content_type=EXCLUDED.content_type,edited=EXCLUDED.edited,update_id=EXCLUDED.update_id
-              WHERE current.direction='incoming' AND current.deleted_at IS NULL AND
+              WHERE current.direction='incoming' AND current.is_support AND current.deleted_at IS NULL AND
                 (current.update_id IS NULL OR EXCLUDED.edited > current.edited OR
                   (EXCLUDED.edited=current.edited AND EXCLUDED.update_id > current.update_id))`,
-            [row.bot_id, chatId, message.message_id, chatTitle, senderName, senderUsername, text, message.date, contentType, edited, body.update_id]);
-            await client.query('UPDATE telegram_settings SET last_received_at=NOW() WHERE id=1 AND bot_id=$1', [row.bot_id]);
+            [...messageKey, senderName, identity.username, text, message.date, contentType, edited, body.update_id]);
           }
-          const menuReply = inserted.rowCount && body.message ? await createTelegramMenuReply(client, message, row.bot_id, body.update_id) : null;
+          const menuReply = body.message ? await createTelegramMenuReply(client, identity, row.bot_id, body.update_id, menu, inSupport) : null;
+          await client.query('UPDATE telegram_settings SET last_received_at=NOW() WHERE id=1 AND bot_id=$1', [row.bot_id]);
           await client.query('COMMIT');
-          if (inserted.rowCount && menuReply) return reply(200, menuReply);
-          return reply(200, { ok: true });
+          return reply(200, menuReply ?? { ok: true });
         } catch (error) { await client.query('ROLLBACK').catch(() => undefined); throw error; }
         finally { client.release(); }
       }
@@ -129,9 +171,9 @@ export function createTelegramHandler(database: MobileDatabase, initialize: () =
           CASE WHEN c.deleted_at IS NULL THEN m.text ELSE '' END AS text,
           CASE WHEN c.deleted_at IS NULL THEN m.content_type ELSE 'other' END AS "contentType",
           m.edited,m.sent_at AS "sentAt",m.received_at AS "receivedAt"
-          FROM telegram_messages m LEFT JOIN telegram_chat_messages c
+          FROM telegram_messages m JOIN telegram_chat_messages c
             ON (c.bot_id,c.chat_id,c.message_id)=(m.bot_id,m.chat_id,m.message_id)
-          WHERE m.bot_id=$1 ORDER BY m.received_at DESC,m.id DESC LIMIT 100`, [row.bot_id]);
+          WHERE m.bot_id=$1 AND c.is_support ORDER BY m.received_at DESC,m.id DESC LIMIT 100`, [row.bot_id]);
         return reply(200, result.rows);
       }
 
@@ -140,7 +182,7 @@ export function createTelegramHandler(database: MobileDatabase, initialize: () =
           SELECT DISTINCT ON(chat_id) chat_id AS "chatId",chat_title AS title,sender_username AS username,
             text AS "lastMessage",content_type AS "lastContentType",(deleted_at IS NOT NULL) AS "lastDeleted",
             sent_at,message_id
-          FROM telegram_chat_messages WHERE bot_id=$1 ORDER BY chat_id,sent_at DESC,message_id DESC
+          FROM telegram_chat_messages WHERE bot_id=$1 AND is_support ORDER BY chat_id,sent_at DESC,message_id DESC
         ) chats ORDER BY sent_at DESC,message_id DESC,"chatId"`, [row.bot_id]);
         return reply(200, { botId: row.bot_id ? String(row.bot_id) : null, connected: Boolean(row.enabled), chats: result.rows });
       }
@@ -152,7 +194,7 @@ export function createTelegramHandler(database: MobileDatabase, initialize: () =
         if (!row.bot_id || botId !== String(row.bot_id)) return reply(409, { message: botChanged });
         const result = await database.query(`SELECT chat_id AS "chatId",message_id::text AS "messageId",
           sender_name AS "senderName",text,direction,sent_at AS "sentAt",content_type AS "contentType",
-          (deleted_at IS NOT NULL) AS deleted FROM telegram_chat_messages WHERE bot_id=$1 AND chat_id=$2
+          (deleted_at IS NOT NULL) AS deleted FROM telegram_chat_messages WHERE bot_id=$1 AND chat_id=$2 AND is_support
           ORDER BY sent_at DESC,message_id DESC LIMIT 300`, [row.bot_id, chatId]);
         return reply(200, result.rows.reverse());
       }
@@ -167,9 +209,9 @@ export function createTelegramHandler(database: MobileDatabase, initialize: () =
         if (!text || text.length > 4096) return reply(400, { message: 'پیام باید بین ۱ تا ۴۰۹۶ نویسه باشد.' });
         if (text.includes('\0')) return reply(400, { message: 'متن پیام معتبر نیست.' });
         const chat = (await database.query<{ chat_title: string; sender_username: string }>(`SELECT chat_title,sender_username
-          FROM telegram_chat_messages WHERE bot_id=$1 AND chat_id=$2 AND direction='incoming'
+          FROM telegram_chat_messages WHERE bot_id=$1 AND chat_id=$2 AND direction='incoming' AND is_support
           ORDER BY sent_at DESC,message_id DESC LIMIT 1`, [row.bot_id, chatId])).rows[0];
-        if (!chat) return reply(404, { message: 'این کاربر هنوز به ربات پیام نداده است.' });
+        if (!chat) return reply(404, { message: 'این کاربر هنوز از بخش پشتیبانی پیام نداده است.' });
 
         const sent = await callTelegram(row.bot_token, 'sendMessage', { chat_id: chatId, text });
         if (!Number.isSafeInteger(sent?.message_id) || sent.message_id < 1 || !Number.isSafeInteger(sent.date) ||
@@ -178,8 +220,8 @@ export function createTelegramHandler(database: MobileDatabase, initialize: () =
           direction: 'outgoing', sentAt: new Date(sent.date * 1000).toISOString(), contentType: 'text', deleted: false };
         try {
           await database.query(`INSERT INTO telegram_chat_messages
-            (bot_id,chat_id,message_id,chat_title,sender_name,sender_username,text,direction,sent_at)
-            VALUES($1,$2,$3,$4,$5,$6,$7,'outgoing',to_timestamp($8))
+            (bot_id,chat_id,message_id,chat_title,sender_name,sender_username,text,direction,sent_at,is_support)
+            VALUES($1,$2,$3,$4,$5,$6,$7,'outgoing',to_timestamp($8),TRUE)
             ON CONFLICT(bot_id,chat_id,message_id) DO NOTHING`,
           [row.bot_id, chatId, sent.message_id, chat.chat_title, message.senderName, chat.sender_username, text, sent.date]);
         } catch {
@@ -200,7 +242,7 @@ export function createTelegramHandler(database: MobileDatabase, initialize: () =
         try {
           await client.query('BEGIN');
           const existing = (await client.query<{ direction: string; deleted_at: Date | null }>(`SELECT direction,deleted_at
-            FROM telegram_chat_messages WHERE bot_id=$1 AND chat_id=$2 AND message_id=$3 FOR UPDATE`, params)).rows[0];
+            FROM telegram_chat_messages WHERE bot_id=$1 AND chat_id=$2 AND message_id=$3 AND is_support FOR UPDATE`, params)).rows[0];
           if (!existing || existing.direction !== 'incoming') {
             await client.query('ROLLBACK');
             return reply(404, { message: 'پیام دریافتی پیدا نشد.' });
