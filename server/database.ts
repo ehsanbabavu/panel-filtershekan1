@@ -61,6 +61,24 @@ export async function initializeSchema(database: Pick<Pool, 'query'>) {
       UNIQUE(bot_id,update_id)
     );
     CREATE INDEX IF NOT EXISTS telegram_messages_bot_received_idx ON telegram_messages(bot_id,received_at DESC,id DESC);
+    CREATE TABLE IF NOT EXISTS telegram_chat_messages (
+      bot_id BIGINT NOT NULL, chat_id TEXT NOT NULL, message_id BIGINT NOT NULL,
+      chat_title TEXT NOT NULL DEFAULT '', sender_name TEXT NOT NULL DEFAULT '', sender_username TEXT NOT NULL DEFAULT '',
+      text TEXT NOT NULL DEFAULT '', direction TEXT NOT NULL CHECK(direction IN ('incoming','outgoing')),
+      sent_at TIMESTAMPTZ NOT NULL, deleted_at TIMESTAMPTZ,
+      PRIMARY KEY(bot_id,chat_id,message_id)
+    );
+    ALTER TABLE telegram_chat_messages ADD COLUMN IF NOT EXISTS content_type TEXT NOT NULL DEFAULT 'text';
+    ALTER TABLE telegram_chat_messages ADD COLUMN IF NOT EXISTS edited BOOLEAN NOT NULL DEFAULT FALSE;
+    ALTER TABLE telegram_chat_messages ADD COLUMN IF NOT EXISTS update_id BIGINT;
+    CREATE INDEX IF NOT EXISTS telegram_chat_messages_bot_chat_time_idx ON telegram_chat_messages(bot_id,chat_id,sent_at DESC,message_id DESC);
+    INSERT INTO telegram_chat_messages(bot_id,chat_id,message_id,chat_title,sender_name,sender_username,text,direction,sent_at,content_type,edited,update_id)
+      SELECT DISTINCT ON(m.bot_id,m.chat_id,m.message_id)
+        m.bot_id,m.chat_id,m.message_id,m.chat_title,m.sender_name,m.sender_username,m.text,'incoming',m.sent_at,m.content_type,m.edited,m.update_id
+      FROM telegram_messages m
+      WHERE NOT EXISTS (SELECT 1 FROM telegram_chat_messages c WHERE (c.bot_id,c.chat_id,c.message_id)=(m.bot_id,m.chat_id,m.message_id))
+      ORDER BY m.bot_id,m.chat_id,m.message_id,m.edited DESC,m.id DESC
+      ON CONFLICT(bot_id,chat_id,message_id) DO NOTHING;
     CREATE TABLE IF NOT EXISTS proxy_settings (
       id INTEGER PRIMARY KEY CHECK (id = 1), host TEXT NOT NULL, port INTEGER NOT NULL CHECK (port BETWEEN 1 AND 65535),
       username TEXT NOT NULL DEFAULT '', password TEXT NOT NULL DEFAULT '', updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()

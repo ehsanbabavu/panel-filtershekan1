@@ -4,6 +4,14 @@ import { createTelegramMenuReply } from './telegramMenu.js';
 
 class TelegramError extends Error {}
 
+function chatIdOf(value: unknown) {
+  const id = typeof value === 'string' || typeof value === 'number' ? String(value) : '';
+  return /^-?[1-9]\d{0,15}$/.test(id) && Number.isSafeInteger(Number(id)) ? id : '';
+}
+
+const botChanged = 'ربات این گفت‌وگو تغییر کرده است. فهرست را به‌روز کنید.';
+const connectBot = 'برای ارسال پیام، ربات تلگرام را از بخش «اتصال ربات» وصل کنید.';
+
 function validWebhook(value: unknown) {
   if (typeof value !== 'string' || value.length > 2000) return false;
   try {
@@ -71,9 +79,14 @@ export function createTelegramHandler(database: MobileDatabase, initialize: () =
           !Number.isSafeInteger(message.chat?.id) || !Number.isSafeInteger(message.date) ||
           message.date < 1 || message.date > 8640000000000) return reply(400, { message: 'ساختار پیام تلگرام معتبر نیست.' });
         const sender = message.from || message.sender_chat || {};
-        const senderName = [sender.first_name, sender.last_name].filter(value => typeof value === 'string').join(' ') || sender.title || message.chat.title || 'فرستنده نامشخص';
+        const senderName = String([sender.first_name, sender.last_name].filter(value => typeof value === 'string').join(' ') ||
+          sender.title || message.chat.title || 'فرستنده نامشخص').slice(0, 256);
+        const senderUsername = typeof sender.username === 'string' ? sender.username.slice(0, 64) : '';
+        const chatTitle = String(message.chat.title || senderName).slice(0, 256);
+        const chatId = String(message.chat.id);
+        const edited = Boolean(body.edited_message || body.edited_channel_post);
         const contentType = typeof message.text === 'string' ? 'text' : ['photo', 'video', 'voice', 'audio', 'document', 'sticker', 'contact', 'location', 'poll'].find(key => message[key]) || 'other';
-        const text = typeof message.text === 'string' ? message.text : typeof message.caption === 'string' ? message.caption : '';
+        const text = (typeof message.text === 'string' ? message.text : typeof message.caption === 'string' ? message.caption : '').slice(0, 4096);
         const client = await database.connect();
         try {
           await client.query('BEGIN');
@@ -81,11 +94,20 @@ export function createTelegramHandler(database: MobileDatabase, initialize: () =
             sender_name,sender_username,text,content_type,edited,sent_at)
             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,to_timestamp($11))
             ON CONFLICT(bot_id,update_id) DO NOTHING RETURNING id`,
-          [row.bot_id, body.update_id, message.message_id, String(message.chat.id),
-            String(message.chat.title || senderName).slice(0, 256), String(senderName).slice(0, 256),
-            typeof sender.username === 'string' ? sender.username.slice(0, 64) : '', text.slice(0, 4096), contentType,
-            Boolean(body.edited_message || body.edited_channel_post), message.date]);
-          if (inserted.rowCount) await client.query('UPDATE telegram_settings SET last_received_at=NOW() WHERE id=1 AND bot_id=$1', [row.bot_id]);
+          [row.bot_id, body.update_id, message.message_id, chatId, chatTitle, senderName, senderUsername, text, contentType, edited, message.date]);
+          if (inserted.rowCount) {
+            await client.query(`INSERT INTO telegram_chat_messages AS current
+              (bot_id,chat_id,message_id,chat_title,sender_name,sender_username,text,direction,sent_at,content_type,edited,update_id)
+              VALUES($1,$2,$3,$4,$5,$6,$7,'incoming',to_timestamp($8),$9,$10,$11)
+              ON CONFLICT(bot_id,chat_id,message_id) DO UPDATE SET
+                chat_title=EXCLUDED.chat_title,sender_name=EXCLUDED.sender_name,sender_username=EXCLUDED.sender_username,
+                text=EXCLUDED.text,content_type=EXCLUDED.content_type,edited=EXCLUDED.edited,update_id=EXCLUDED.update_id
+              WHERE current.direction='incoming' AND current.deleted_at IS NULL AND
+                (current.update_id IS NULL OR EXCLUDED.edited > current.edited OR
+                  (EXCLUDED.edited=current.edited AND EXCLUDED.update_id > current.update_id))`,
+            [row.bot_id, chatId, message.message_id, chatTitle, senderName, senderUsername, text, message.date, contentType, edited, body.update_id]);
+            await client.query('UPDATE telegram_settings SET last_received_at=NOW() WHERE id=1 AND bot_id=$1', [row.bot_id]);
+          }
           const menuReply = inserted.rowCount && body.message ? await createTelegramMenuReply(client, message, row.bot_id, body.update_id) : null;
           await client.query('COMMIT');
           if (inserted.rowCount && menuReply) return reply(200, menuReply);
@@ -102,11 +124,98 @@ export function createTelegramHandler(database: MobileDatabase, initialize: () =
       if (action === 'settings' && method === 'GET') return reply(200, settingsOf(row));
 
       if (action === 'messages' && method === 'GET') {
-        const result = await database.query(`SELECT id,update_id AS "updateId",message_id AS "messageId",chat_id AS "chatId",
-          chat_title AS "chatTitle",sender_name AS "senderName",sender_username AS "senderUsername",text,
-          content_type AS "contentType",edited,sent_at AS "sentAt",received_at AS "receivedAt"
-          FROM telegram_messages WHERE bot_id=$1 ORDER BY received_at DESC,id DESC LIMIT 100`, [row.bot_id]);
+        const result = await database.query(`SELECT m.id,m.update_id AS "updateId",m.message_id AS "messageId",m.chat_id AS "chatId",
+          m.chat_title AS "chatTitle",m.sender_name AS "senderName",m.sender_username AS "senderUsername",
+          CASE WHEN c.deleted_at IS NULL THEN m.text ELSE '' END AS text,
+          CASE WHEN c.deleted_at IS NULL THEN m.content_type ELSE 'other' END AS "contentType",
+          m.edited,m.sent_at AS "sentAt",m.received_at AS "receivedAt"
+          FROM telegram_messages m LEFT JOIN telegram_chat_messages c
+            ON (c.bot_id,c.chat_id,c.message_id)=(m.bot_id,m.chat_id,m.message_id)
+          WHERE m.bot_id=$1 ORDER BY m.received_at DESC,m.id DESC LIMIT 100`, [row.bot_id]);
         return reply(200, result.rows);
+      }
+
+      if (action === 'chats' && method === 'GET') {
+        const result = await database.query(`SELECT "chatId",title,username,"lastMessage","lastContentType","lastDeleted" FROM (
+          SELECT DISTINCT ON(chat_id) chat_id AS "chatId",chat_title AS title,sender_username AS username,
+            text AS "lastMessage",content_type AS "lastContentType",(deleted_at IS NOT NULL) AS "lastDeleted",
+            sent_at,message_id
+          FROM telegram_chat_messages WHERE bot_id=$1 ORDER BY chat_id,sent_at DESC,message_id DESC
+        ) chats ORDER BY sent_at DESC,message_id DESC,"chatId"`, [row.bot_id]);
+        return reply(200, { botId: row.bot_id ? String(row.bot_id) : null, connected: Boolean(row.enabled), chats: result.rows });
+      }
+
+      if (action === 'chat' && method === 'GET') {
+        const chatId = chatIdOf(req.query?.chatId ?? url.searchParams.get('chatId'));
+        const botId = req.query?.botId ?? url.searchParams.get('botId');
+        if (!chatId) return reply(400, { message: 'گفت‌وگوی تلگرام معتبر نیست.' });
+        if (!row.bot_id || botId !== String(row.bot_id)) return reply(409, { message: botChanged });
+        const result = await database.query(`SELECT chat_id AS "chatId",message_id::text AS "messageId",
+          sender_name AS "senderName",text,direction,sent_at AS "sentAt",content_type AS "contentType",
+          (deleted_at IS NOT NULL) AS deleted FROM telegram_chat_messages WHERE bot_id=$1 AND chat_id=$2
+          ORDER BY sent_at DESC,message_id DESC LIMIT 300`, [row.bot_id, chatId]);
+        return reply(200, result.rows.reverse());
+      }
+
+      if (action === 'send' && method === 'POST') {
+        const body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body;
+        const chatId = chatIdOf(body?.chatId);
+        const text = typeof body?.message === 'string' ? body.message.trim() : '';
+        if (!row.enabled || !row.bot_token || !row.bot_id) return reply(409, { message: connectBot });
+        if (body?.botId !== String(row.bot_id)) return reply(409, { message: botChanged });
+        if (!chatId || chatId.startsWith('-')) return reply(400, { message: 'یک گفت‌وگوی خصوصی تلگرام انتخاب کنید.' });
+        if (!text || text.length > 4096) return reply(400, { message: 'پیام باید بین ۱ تا ۴۰۹۶ نویسه باشد.' });
+        if (text.includes('\0')) return reply(400, { message: 'متن پیام معتبر نیست.' });
+        const chat = (await database.query<{ chat_title: string; sender_username: string }>(`SELECT chat_title,sender_username
+          FROM telegram_chat_messages WHERE bot_id=$1 AND chat_id=$2 AND direction='incoming'
+          ORDER BY sent_at DESC,message_id DESC LIMIT 1`, [row.bot_id, chatId])).rows[0];
+        if (!chat) return reply(404, { message: 'این کاربر هنوز به ربات پیام نداده است.' });
+
+        const sent = await callTelegram(row.bot_token, 'sendMessage', { chat_id: chatId, text });
+        if (!Number.isSafeInteger(sent?.message_id) || sent.message_id < 1 || !Number.isSafeInteger(sent.date) ||
+          sent.date < 1 || sent.date > 8640000000000) throw new TelegramError('مشخصات پیام ارسالی از تلگرام دریافت نشد.');
+        const message = { chatId, messageId: String(sent.message_id), senderName: 'پشتیبانی', text,
+          direction: 'outgoing', sentAt: new Date(sent.date * 1000).toISOString(), contentType: 'text', deleted: false };
+        try {
+          await database.query(`INSERT INTO telegram_chat_messages
+            (bot_id,chat_id,message_id,chat_title,sender_name,sender_username,text,direction,sent_at)
+            VALUES($1,$2,$3,$4,$5,$6,$7,'outgoing',to_timestamp($8))
+            ON CONFLICT(bot_id,chat_id,message_id) DO NOTHING`,
+          [row.bot_id, chatId, sent.message_id, chat.chat_title, message.senderName, chat.sender_username, text, sent.date]);
+        } catch {
+          return reply(202, { ...message, notice: 'پیام در تلگرام ارسال شد. ثبت پیام در تاریخچه انجام نشد.' });
+        }
+        return reply(201, message);
+      }
+
+      if (action === 'delete-message' && method === 'POST') {
+        const body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body;
+        const chatId = chatIdOf(body?.chatId);
+        const messageId = chatIdOf(body?.messageId);
+        if (!row.bot_id || body?.botId !== String(row.bot_id)) return reply(409, { message: botChanged });
+        if (!row.enabled || !row.bot_token) return reply(409, { message: 'ابتدا ربات تلگرام را وصل کنید.' });
+        if (!chatId || !messageId || messageId.startsWith('-')) return reply(400, { message: 'شناسهٔ پیام معتبر نیست.' });
+        const params = [row.bot_id, chatId, messageId];
+        const client = await database.connect();
+        try {
+          await client.query('BEGIN');
+          const existing = (await client.query<{ direction: string; deleted_at: Date | null }>(`SELECT direction,deleted_at
+            FROM telegram_chat_messages WHERE bot_id=$1 AND chat_id=$2 AND message_id=$3 FOR UPDATE`, params)).rows[0];
+          if (!existing || existing.direction !== 'incoming') {
+            await client.query('ROLLBACK');
+            return reply(404, { message: 'پیام دریافتی پیدا نشد.' });
+          }
+          if (!existing.deleted_at) {
+            await callTelegram(row.bot_token, 'deleteMessage', { chat_id: chatId, message_id: Number(messageId) });
+            await client.query(`UPDATE telegram_chat_messages SET deleted_at=NOW(),text=''
+              WHERE bot_id=$1 AND chat_id=$2 AND message_id=$3`, params);
+            await client.query(`UPDATE telegram_messages SET text='',content_type='other'
+              WHERE bot_id=$1 AND chat_id=$2 AND message_id=$3`, params);
+          }
+          await client.query('COMMIT');
+          return reply(200, { deleted: true });
+        } catch (error) { await client.query('ROLLBACK').catch(() => undefined); throw error; }
+        finally { client.release(); }
       }
 
       if (action === 'status' && method === 'GET') {
