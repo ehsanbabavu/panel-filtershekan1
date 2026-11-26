@@ -29,7 +29,9 @@ return async function handler(req: any, res: any) {
     const pathname = new URL(req.url || '/', 'http://localhost').pathname.replace(/\/+$/, '') || '/';
     const method = String(req.method || 'GET').toUpperCase();
 
-    if (pathname === '/api/telegram') return await createTelegramHandler(database, async () => {})(req, res);
+    if (pathname === '/api/telegram' || pathname === '/api/telegram/channel/scheduled') {
+      return await createTelegramHandler(database, async () => {})(req, res);
+    }
 
     if (pathname === '/api/health' && method === 'GET') {
       await database.query('SELECT 1');
