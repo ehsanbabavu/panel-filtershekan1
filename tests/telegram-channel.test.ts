@@ -18,6 +18,8 @@ describe('Telegram channel publishing', () => {
   let chatType = 'channel';
   let sendResult: 'success' | 'rejected' | 'timeout' = 'success';
   let invalidAi = false;
+  let category = 0;
+  let feedsDown = false;
   const sent: { chat_id: string; text: string }[] = [];
   const prompts: any[] = [];
   const aiAuthorization: (string | null)[] = [];
@@ -25,6 +27,23 @@ describe('Telegram channel publishing', () => {
   const adminToken = 'fixture-admin-session';
   const botToken = '123456789:fixture-bot-token';
   const env = { VERCEL: '1', CRON_SECRET: 'fixture-cron-secret', AVALAI_API_KEY: 'fixture-avalai-key' };
+  const techUrl = 'https://arstechnica.com/tech-policy/new-chip';
+  const olderTechUrl = 'https://www.theverge.com/tech/new-network';
+  const politicsUrl = 'https://www.theguardian.com/politics/new-election';
+  const newsFetch: typeof fetch = async url => {
+    if (feedsDown) throw new Error('Feed unavailable');
+    const stories: Record<string, [string, string, string][]> = {
+      'feeds.arstechnica.com': [['A company presents a new chip', techUrl + '?utm_source=rss', 'Thu, 26 Nov 2026 10:00:00 GMT']],
+      'www.theverge.com': [['New network made available', olderTechUrl, 'Thu, 26 Nov 2026 09:00:00 GMT']],
+      'www.wired.com': [['Old device', 'https://www.wired.com/story/old', 'Fri, 20 Nov 2026 10:00:00 GMT']],
+    };
+    const feed = new URL(String(url));
+    const items = feed.pathname === '/politics/rss'
+      ? [['Parliament calls new election', politicsUrl, 'Thu, 26 Nov 2026 10:30:00 GMT']]
+      : stories[feed.hostname] ?? [];
+    return new Response(`<rss version="2.0"><channel><title>Test feed</title>${items.map(([title, link, date]) =>
+      `<item><title>${title}</title><link>${link}</link><pubDate>${date}</pubDate><description>A detailed source summary with named facts about the story.</description></item>`).join('')}</channel></rss>`);
+  };
 
   const telegramFetch: typeof fetch = async (url, options) => {
     const body = JSON.parse(String(options?.body));
@@ -59,7 +78,9 @@ describe('Telegram channel publishing', () => {
     await postgres.database.query(`INSERT INTO sessions(token,admin_username,expires_at)
       SELECT $1,username,NOW()+INTERVAL '1 hour' FROM admins LIMIT 1`, [adminToken]);
     await postgres.database.query('UPDATE telegram_settings SET bot_id=$1,bot_token=$2 WHERE id=1', [123456789, botToken]);
-    const publisher = createTelegramChannelPublisher(postgres.database, async () => {}, { telegramFetch, aiFetch, env, now: () => date });
+    const publisher = createTelegramChannelPublisher(postgres.database, async () => {}, {
+      telegramFetch, aiFetch, newsFetch, chooseNewsCategory: () => category, env, now: () => date,
+    });
     runScheduled = publisher.runScheduled;
     const app = express();
     app.use(express.json());
@@ -85,7 +106,7 @@ describe('Telegram channel publishing', () => {
     return { status: response.status, data: await response.json() };
   }
 
-  const settings = { target: 'https://t.me/test_channel', topic: 'راهنمای آریا', model: 'gpt-5-mini', automatic: false };
+  const settings = { target: 'https://t.me/test_channel', model: 'gpt-5-mini', automatic: false };
 
   it('requires the right credentials and verifies a channel and its posting permission', async () => {
     assert.equal((await request('settings', 'GET', undefined, 'invalid')).status, 401);
@@ -104,19 +125,27 @@ describe('Telegram channel publishing', () => {
     assert.equal((await request('settings', 'PUT', { ...settings, revision: 0 })).status, 409);
   });
 
-  it('generates a source-based preview without sending it, and rejects invalid model output', async () => {
-    const brief = { ...settings, source: 'آریا یک راهنما منتشر کرد.', sourceUrl: 'https://example.com/news' };
-    assert.equal((await request('preview', 'POST', { ...brief, sourceUrl: '' })).status, 400);
-    const preview = await request('preview', 'POST', brief);
+  it('summarizes the latest eligible story in either category and skips generation when feeds are unavailable', async () => {
+    const preview = await request('preview', 'POST', settings);
     assert.equal(preview.status, 200);
-    assert.equal(preview.data.text, 'یک نکتهٔ کاربردی\n\nمنبع: https://example.com/news');
+    assert.ok(preview.data.text.endsWith(techUrl));
+    assert.match(preview.data.text, /Ars Technica/);
     assert.equal(aiAuthorization.at(-1), `Bearer ${env.AVALAI_API_KEY}`);
     assert.equal(prompts.at(-1).model, settings.model);
-    assert.equal(JSON.parse(prompts.at(-1).messages[1].content).متن_منبع, brief.source);
+    assert.match(JSON.parse(prompts.at(-1).messages[1].content).متن_منبع, /A company presents a new chip/);
+    category = 1;
+    assert.ok((await request('preview', 'POST', settings)).data.text.endsWith(politicsUrl));
+    assert.equal(JSON.parse(prompts.at(-1).messages[1].content).موضوع, 'خبر سیاسی');
+    category = 0;
     assert.equal(sent.length, 0);
     invalidAi = true;
-    assert.equal((await request('preview', 'POST', brief)).status, 502);
+    assert.equal((await request('preview', 'POST', settings)).status, 502);
     invalidAi = false;
+    feedsDown = true;
+    const aiCalls = prompts.length;
+    assert.equal((await request('preview', 'POST', settings)).status, 502);
+    assert.equal(prompts.length, aiCalls);
+    feedsDown = false;
   });
 
   it('lets only administrators save an AvalAI key and exposes only its status', async () => {
@@ -159,6 +188,32 @@ describe('Telegram channel publishing', () => {
     sendResult = 'success';
   });
 
+  it('deletes the database history row and prevents a deleted request from being sent again', async () => {
+    const history = (await request()).data.history;
+    const post = history.find((item: any) => item.status === 'sent');
+    assert.ok(post);
+    assert.equal((await request('history', 'DELETE', { id: post.id }, 'invalid')).status, 401);
+    const deleted = await request('history', 'DELETE', { id: post.id });
+    assert.equal(deleted.status, 200);
+    assert.equal(deleted.data.history.length, history.length - 1);
+    assert.ok(!deleted.data.history.some((item: any) => item.id === post.id));
+    assert.equal((await postgres.database.query('SELECT id FROM telegram_channel_deliveries WHERE id=$1', [post.id])).rowCount, 0);
+    assert.equal((await request('send', 'POST', { requestId: post.id.slice(7), revision: 1, text: post.text })).status, 409);
+    assert.equal(sent.length, 3);
+  });
+
+  it('deletes history created before request tracking, but protects active deliveries', async () => {
+    const id = 'manual:' + randomUUID();
+    await postgres.database.query(`INSERT INTO telegram_channel_deliveries(id,channel_id,channel_title,mode,text)
+      VALUES($1,$2,'کانال آزمون','manual','پیام قدیمی')`, [id, channelId]);
+    assert.equal((await request('history', 'DELETE', { id })).status, 409);
+    await postgres.database.query("UPDATE telegram_channel_deliveries SET status='sent' WHERE id=$1", [id]);
+    assert.equal((await request('history', 'DELETE', { id })).status, 200);
+    assert.equal((await postgres.database.query('SELECT id FROM telegram_channel_deliveries WHERE id=$1', [id])).rowCount, 0);
+    assert.equal((await request('send', 'POST', { requestId: id.slice(7), revision: 1, text: 'پیام قدیمی' })).status, 409);
+    assert.equal(sent.length, 3);
+  });
+
   it('runs once per Tehran date, collects history, and stops when disabled', async () => {
     const saved = await request('settings', 'PUT', { ...settings, target: channelId, automatic: true, revision: 1 });
     assert.equal(saved.status, 200);
@@ -170,9 +225,11 @@ describe('Telegram channel publishing', () => {
     assert.equal(sent.length, 4);
     date = new Date('2026-11-27T16:30:00Z');
     assert.equal((await scheduled()).data.status, 'sent');
-    assert.deepEqual(JSON.parse(prompts.at(-1).messages[1].content).پست‌های_قبلی, ['یک نکتهٔ کاربردی']);
+    assert.ok(sent.at(-1)?.text.endsWith(olderTechUrl));
     const snapshot = await request();
     assert.equal(snapshot.data.history.filter((post: any) => post.mode === 'automatic').length, 2);
+    assert.equal((await request('history', 'DELETE', { id: 'daily:2026-11-27' })).status, 200);
+    assert.equal((await scheduled()).data.status, 'already-processed');
     permission = false;
     assert.equal((await request('settings', 'PUT', { ...settings, target: channelId, revision: 2 })).status, 200);
     date = new Date('2026-11-28T16:30:00Z');

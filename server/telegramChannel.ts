@@ -1,11 +1,12 @@
 import { timingSafeEqual } from 'node:crypto';
 import type { MobileDatabase } from './presence.js';
 import { createTelegramClient, TelegramError } from './telegramApi.js';
-import { channelMessage, ChannelError, generateChannelMessage, httpsUrl } from './telegramChannelContent.js';
+import { channelMessage, ChannelError, generateChannelMessage } from './telegramChannelContent.js';
+import { findChannelNews } from './telegramChannelNews.js';
 
 type Channel = {
   channelId: string; channelTitle: string; channelUsername: string; botId: string | null;
-  topic: string; model: string; automatic: boolean; revision: number;
+  model: string; automatic: boolean; revision: number;
 };
 type Bot = { id: string | null; token: string; username: string };
 type Delivery = {
@@ -14,7 +15,7 @@ type Delivery = {
 };
 
 const channelColumns = `channel_id AS "channelId",channel_title AS "channelTitle",channel_username AS "channelUsername",
-  bot_id::text AS "botId",topic,model,automatic,revision`;
+  bot_id::text AS "botId",model,automatic,revision`;
 const historyColumns = `id,channel_id AS "channelId",channel_title AS "channelTitle",mode,
   CASE WHEN status='pending' AND created_at < NOW()-INTERVAL '2 minutes' THEN 'uncertain' ELSE status END AS status,
   text,error,message_id::text AS "messageId",created_at AS "createdAt"`;
@@ -23,7 +24,7 @@ export const telegramChannelSchema = `
   CREATE TABLE IF NOT EXISTS telegram_channel_settings (
     id INTEGER PRIMARY KEY CHECK(id=1), channel_id TEXT NOT NULL DEFAULT '',
     channel_title TEXT NOT NULL DEFAULT '', channel_username TEXT NOT NULL DEFAULT '',
-    bot_id BIGINT, topic TEXT NOT NULL DEFAULT 'راهنمای استفاده از آریا و نکته‌های کاربردی اینترنت',
+    bot_id BIGINT,
     model TEXT NOT NULL DEFAULT '', automatic BOOLEAN NOT NULL DEFAULT FALSE,
     revision INTEGER NOT NULL DEFAULT 0
   );
@@ -34,7 +35,9 @@ export const telegramChannelSchema = `
     status TEXT NOT NULL DEFAULT 'pending', text TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '',
     message_id BIGINT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   );
+  ALTER TABLE telegram_channel_deliveries ADD COLUMN IF NOT EXISTS source_url TEXT;
   CREATE INDEX IF NOT EXISTS telegram_channel_deliveries_created_idx ON telegram_channel_deliveries(created_at DESC);
+  CREATE TABLE IF NOT EXISTS telegram_channel_requests (id TEXT PRIMARY KEY);
 `;
 
 function modelName(value: unknown) {
@@ -52,14 +55,6 @@ function channelTarget(value: unknown) {
   throw new ChannelError(400, 'کانال را با نام کاربری، پیوند عمومی t.me یا شناسهٔ عددی ‎-100… وارد کنید.');
 }
 
-function sourceLink(value: unknown) {
-  const url = typeof value === 'string' && value.length <= 600 && httpsUrl(value.trim());
-  if (!url || url.href.length > 600) {
-    throw new ChannelError(400, 'نشانی HTTPS منبع را وارد کنید.');
-  }
-  return url.href;
-}
-
 function cronAuthorized(header: unknown, secret: string | undefined) {
   if (!secret || typeof header !== 'string') return false;
   const supplied = Buffer.from(header), expected = Buffer.from('Bearer ' + secret);
@@ -67,7 +62,8 @@ function cronAuthorized(header: unknown, secret: string | undefined) {
 }
 
 export function createTelegramChannelPublisher(database: MobileDatabase, initialize: () => Promise<void>, {
-  telegramFetch = fetch, aiFetch = fetch, env = process.env, now = () => new Date(),
+  telegramFetch = fetch, aiFetch = fetch, newsFetch = fetch, chooseNewsCategory = undefined as (() => number) | undefined,
+  env = process.env, now = () => new Date(),
 } = {}) {
   const callTelegram = createTelegramClient(telegramFetch);
   const readChannel = async () => (await database.query<Channel>(
@@ -95,12 +91,17 @@ export function createTelegramChannelPublisher(database: MobileDatabase, initial
     return { saved: true, configured: true };
   }
 
-  async function generate(input: Parameters<typeof generateChannelMessage>[0]) {
+  async function generate(model: string, channelId: string) {
     const result = await database.query<{ avalai_api_key: string }>(
       'SELECT avalai_api_key FROM telegram_channel_settings WHERE id=1');
-    return generateChannelMessage(input, {
-      apiKey: result.rows[0]?.avalai_api_key || environmentKey(), baseUrl: env.AVALAI_BASE_URL,
-    }, aiFetch);
+    const apiKey = result.rows[0]?.avalai_api_key || environmentKey();
+    if (!apiKey) throw new ChannelError(409, 'کلید AvalAI را از بخش «تلگرام ← تنظیمات» ثبت کنید.');
+    const recent = await database.query<{ source_url: string }>(`SELECT source_url FROM telegram_channel_deliveries
+      WHERE channel_id=$1 AND source_url IS NOT NULL AND status IN ('sent','uncertain')
+      AND created_at >= NOW()-INTERVAL '7 days'`, [channelId]);
+    const news = await findChannelNews(newsFetch, now(), new Set(recent.rows.map(row => row.source_url)), chooseNewsCategory);
+    const text = await generateChannelMessage({ model, ...news }, { apiKey, baseUrl: env.AVALAI_BASE_URL }, aiFetch);
+    return { text, sourceUrl: news.sourceUrl };
   }
 
   const assertBot = (bot: Bot) => {
@@ -121,16 +122,17 @@ export function createTelegramChannelPublisher(database: MobileDatabase, initial
       username: typeof chat.username === 'string' && /^\w{5,32}$/.test(chat.username) ? chat.username : '' };
   }
 
+  const readHistory = () => database.query<Delivery>(
+    `SELECT ${historyColumns} FROM telegram_channel_deliveries ORDER BY created_at DESC,id DESC LIMIT 30`);
+
   async function snapshot() {
-    const [channel, bot, ai, history] = await Promise.all([readChannel(), readBot(), readAiSettings(), database.query<Delivery>(
-      `SELECT ${historyColumns} FROM telegram_channel_deliveries ORDER BY created_at DESC,id DESC LIMIT 30`)]);
+    const [channel, bot, ai, history] = await Promise.all([readChannel(), readBot(), readAiSettings(), readHistory()]);
     return { channel, botUsername: bot.username, channelReady: Boolean(channel.channelId && bot.token && bot.id === channel.botId),
       aiConfigured: ai.configured, schedulerConfigured: env.VERCEL ? Boolean(env.CRON_SECRET) : true, history: history.rows };
   }
 
   async function save(body: any, channel: Channel, bot: Bot) {
     const target = channelTarget(body?.target);
-    const topic = channelMessage(body?.topic, 500, 'موضوع');
     const model = body?.model === '' ? '' : modelName(body?.model);
     const automatic = body?.automatic;
     if (typeof automatic !== 'boolean') throw new ChannelError(400, 'وضعیت انتشار خودکار معتبر نیست.');
@@ -144,21 +146,44 @@ export function createTelegramChannelPublisher(database: MobileDatabase, initial
       ? { id: channel.channelId, title: channel.channelTitle, username: channel.channelUsername }
       : await verifyChannel(bot, target);
     const updated = await database.query(`UPDATE telegram_channel_settings
-      SET channel_id=$1,channel_title=$2,channel_username=$3,bot_id=$4,topic=$5,model=$6,automatic=$7,revision=revision+1
-      WHERE id=1 AND revision=$8 AND ($10 OR EXISTS (SELECT 1 FROM telegram_settings WHERE id=1 AND bot_id=$4 AND bot_token=$9))`,
+      SET channel_id=$1,channel_title=$2,channel_username=$3,bot_id=$4,model=$5,automatic=$6,revision=revision+1
+      WHERE id=1 AND revision=$7 AND ($9 OR EXISTS (SELECT 1 FROM telegram_settings WHERE id=1 AND bot_id=$4 AND bot_token=$8))`,
     [verified.id, verified.title, verified.username, keepChannel ? channel.botId : bot.id,
-      topic, model, automatic, channel.revision, bot.token, keepChannel]);
+      model, automatic, channel.revision, bot.token, keepChannel]);
     if (!updated.rowCount) throw new ChannelError(409, 'تنظیمات کانال یا ربات تغییر کرده است. صفحه را تازه کنید.');
     return snapshot();
   }
 
+  async function deleteDelivery(id: unknown) {
+    if (typeof id !== 'string' || !/^(?:daily:\d{4}-\d{2}-\d{2}|manual:[a-f0-9-]{36})$/.test(id)) {
+      throw new ChannelError(400, 'شناسهٔ پیام تاریخچه معتبر نیست.');
+    }
+    // Keep only the request ID, so deleting history cannot replay a previous send.
+    const deleted = await database.query(`WITH removed AS (
+      DELETE FROM telegram_channel_deliveries WHERE id=$1 AND (status<>'pending' OR created_at < NOW()-INTERVAL '2 minutes')
+      RETURNING id
+    ), remembered AS (
+      INSERT INTO telegram_channel_requests(id) SELECT id FROM removed ON CONFLICT DO NOTHING
+    ) SELECT id FROM removed`, [id]);
+    if (!deleted.rowCount && await readDelivery(id)) {
+      throw new ChannelError(409, 'پیام در حال ارسال است. بعد از مشخص شدن نتیجه دوباره تلاش کنید.');
+    }
+    return { history: (await readHistory()).rows };
+  }
+
   async function send(id: string, channel: Channel, bot: Bot, manualText?: string) {
     const mode = manualText === undefined ? 'automatic' : 'manual';
-    const claimed = await database.query(`INSERT INTO telegram_channel_deliveries(id,channel_id,channel_title,mode,text)
-      SELECT $1,c.channel_id,c.channel_title,$2,$3 FROM telegram_channel_settings c
+    const claimed = await database.query(`WITH destination AS (
+      SELECT c.channel_id,c.channel_title FROM telegram_channel_settings c
       JOIN telegram_settings b ON b.id=1 AND c.bot_id=b.bot_id AND b.bot_token=$4
       WHERE c.id=1 AND c.revision=$5 AND ($2='manual' OR c.automatic)
-      ON CONFLICT(id) DO NOTHING RETURNING id`, [id, mode, manualText ?? '', bot.token, channel.revision]);
+      AND NOT EXISTS (SELECT 1 FROM telegram_channel_deliveries WHERE id=$1)
+    ), claimed AS (
+      INSERT INTO telegram_channel_requests(id) SELECT $1 FROM destination ON CONFLICT DO NOTHING RETURNING id
+    )
+    INSERT INTO telegram_channel_deliveries(id,channel_id,channel_title,mode,text)
+      SELECT claimed.id,destination.channel_id,destination.channel_title,$2,$3 FROM claimed CROSS JOIN destination
+      RETURNING id`, [id, mode, manualText ?? '', bot.token, channel.revision]);
     if (!claimed.rowCount) {
       const existing = await readDelivery(id);
       if (mode === 'automatic') return null;
@@ -169,15 +194,16 @@ export function createTelegramChannelPublisher(database: MobileDatabase, initial
     let sending = false;
     try {
       let text = manualText;
+      let sourceUrl: string | null = null;
       if (text === undefined) {
-        const previous = await database.query<{ text: string }>(`SELECT text FROM telegram_channel_deliveries
-          WHERE channel_id=$1 AND status='sent' AND mode='automatic' ORDER BY created_at DESC LIMIT 5`, [channel.channelId]);
-        text = await generate({ model: channel.model, topic: channel.topic, recent: previous.rows.map(row => row.text) });
+        const news = await generate(channel.model, channel.channelId);
+        text = news.text;
+        sourceUrl = news.sourceUrl;
       }
-      const current = await database.query(`UPDATE telegram_channel_deliveries SET text=$2 WHERE id=$1
+      const current = await database.query(`UPDATE telegram_channel_deliveries SET text=$2,source_url=$6 WHERE id=$1
         AND EXISTS (SELECT 1 FROM telegram_channel_settings c JOIN telegram_settings b ON b.id=1
           AND c.bot_id=b.bot_id AND b.bot_token=$3 WHERE c.id=1 AND c.revision=$4 AND ($5='manual' OR c.automatic))`,
-      [id, text, bot.token, channel.revision, mode]);
+      [id, text, bot.token, channel.revision, mode, sourceUrl]);
       if (!current.rowCount) throw new ChannelError(409, 'تنظیمات کانال یا ربات هنگام آماده‌سازی پیام تغییر کرد.');
       sending = true;
       const sent = await callTelegram(bot.token, 'sendMessage', { chat_id: channel.channelId, text,
@@ -236,13 +262,12 @@ export function createTelegramChannelPublisher(database: MobileDatabase, initial
       if (action === 'ai-settings' && method === 'GET') return reply(200, await readAiSettings());
       const body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body;
       if (action === 'ai-settings' && method === 'PUT') return reply(200, await saveAiSettings(body));
+      if (action === 'history' && method === 'DELETE') return reply(200, await deleteDelivery(body?.id));
       if (action === 'preview' && method === 'POST') {
-        const topic = channelMessage(body?.topic, 500, 'موضوع');
         const model = modelName(body?.model);
-        const hasSource = Boolean(body?.source || body?.sourceUrl);
-        const source = hasSource ? channelMessage(body.source, 8000, 'منبع') : undefined;
-        const sourceUrl = hasSource ? sourceLink(body.sourceUrl) : undefined;
-        return reply(200, { text: await generate({ model, topic, source, sourceUrl }) });
+        const channel = await readChannel();
+        const { text } = await generate(model, channel.channelId);
+        return reply(200, { text });
       }
 
       const [channel, bot] = await Promise.all([readChannel(), readBot()]);

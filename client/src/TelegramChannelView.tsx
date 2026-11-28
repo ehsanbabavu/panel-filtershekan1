@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { ExternalLink, Link2, Megaphone, RefreshCw, Save, Send, Sparkles } from 'lucide-react';
+import { ExternalLink, Link2, Megaphone, RefreshCw, Save, Send, Sparkles, Trash2 } from 'lucide-react';
 import { readApiResponse } from './apiResponse';
 import './telegram.css';
 
@@ -8,7 +8,7 @@ type Delivery = {
   status: 'pending' | 'sent' | 'failed' | 'uncertain'; text: string; error: string; messageId: string | null; createdAt: string;
 };
 type ChannelPanel = {
-  channel: { channelId: string; channelTitle: string; channelUsername: string; topic: string; model: string;
+  channel: { channelId: string; channelTitle: string; channelUsername: string; model: string;
     automatic: boolean; revision: number };
   botUsername: string; channelReady: boolean; aiConfigured: boolean; schedulerConfigured: boolean; history: Delivery[];
 };
@@ -37,10 +37,8 @@ export default function TelegramChannelView({ token, onNotify, onOpenSettings }:
   token: string; onNotify: (message: string) => void; onOpenSettings: () => void;
 }) {
   const [panel, setPanel] = useState<ChannelPanel | null>(null);
-  const [form, setForm] = useState({ target: '', topic: '', model: '', automatic: false });
+  const [form, setForm] = useState({ target: '', model: '', automatic: false });
   const [draft, setDraft] = useState('');
-  const [source, setSource] = useState('');
-  const [sourceUrl, setSourceUrl] = useState('');
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
@@ -48,8 +46,8 @@ export default function TelegramChannelView({ token, onNotify, onOpenSettings }:
 
   function applySettings(result: ChannelPanel) {
     setPanel(result);
-    const { channelId, topic, model, automatic } = result.channel;
-    setForm({ target: channelId, topic, model, automatic });
+    const { channelId, model, automatic } = result.channel;
+    setForm({ target: channelId, model, automatic });
   }
 
   useEffect(() => {
@@ -80,11 +78,18 @@ export default function TelegramChannelView({ token, onNotify, onOpenSettings }:
 
   function generate() {
     void run('preview', async () => {
-      const result = await channelRequest<{ text: string }>(token, 'preview', 'POST', {
-        topic: form.topic, model: form.model, source: source.trim(), sourceUrl: sourceUrl.trim(),
-      });
+      const result = await channelRequest<{ text: string }>(token, 'preview', 'POST', { model: form.model });
       setDraft(result.text);
       onNotify('متن پیشنهادی آماده است.');
+    });
+  }
+
+  function removeFromHistory(post: Delivery) {
+    if (!window.confirm('این رکورد از تاریخچهٔ پنل حذف شود؟ پیام منتشرشده در کانال تلگرام باقی می‌ماند.')) return;
+    void run('delete:' + post.id, async () => {
+      const { history } = await channelRequest<{ history: Delivery[] }>(token, 'history', 'DELETE', { id: post.id });
+      setPanel(previous => previous && { ...previous, history });
+      onNotify('رکورد از تاریخچه حذف شد.');
     });
   }
 
@@ -118,7 +123,7 @@ export default function TelegramChannelView({ token, onNotify, onOpenSettings }:
 
   const saved = panel?.channel;
   const busyOrLoading = Boolean(busy) || loading;
-  const canGenerate = panel?.aiConfigured && form.topic.trim() && form.model.trim();
+  const canGenerate = panel?.aiConfigured && form.model.trim();
   const unchangedTarget = form.target.trim() === (saved?.channelId || '');
   const canSend = panel?.channelReady && unchangedTarget && draft.trim()
     && !(attempt.current?.settled && attempt.current.text === draft.trim() && attempt.current.revision === saved?.revision);
@@ -128,7 +133,7 @@ export default function TelegramChannelView({ token, onNotify, onOpenSettings }:
     {error && <div className="user-form-error" role="alert">{error}</div>}
     <div className="telegram-setup-grid">
       <section className="panel full-panel">
-        <div className="panel-head"><div><h2>تنظیمات کانال</h2><p>مقصد و موضوع انتشار خودکار</p></div><Megaphone size={20}/></div>
+        <div className="panel-head"><div><h2>تنظیمات کانال</h2><p>مقصد و زمان‌بندی انتشار خودکار</p></div><Megaphone size={20}/></div>
         <form className="telegram-form" onSubmit={save}>
           <label>نام کاربری یا شناسهٔ کانال
             <input dir="ltr" value={form.target} onChange={event => setForm({ ...form, target: event.target.value })}
@@ -139,10 +144,6 @@ export default function TelegramChannelView({ token, onNotify, onOpenSettings }:
             <span className={`status ${panel?.channelReady ? 'online' : 'offline'}`}><i/>{panel?.channelReady ? 'کانال ثبت‌شده' : 'نیاز به بررسی ربات'}</span>
             {saved.channelUsername ? <a dir="auto" href={`https://t.me/${saved.channelUsername}`} target="_blank" rel="noreferrer">{saved.channelTitle} <ExternalLink size={12}/></a> : <strong dir="auto">{saved.channelTitle}</strong>}
           </p>}
-          <label>موضوع پست‌ها
-            <textarea rows={2} value={form.topic} onChange={event => setForm({ ...form, topic: event.target.value })}
-              required maxLength={500} disabled={busyOrLoading}/>
-          </label>
           <label>مدل متنی AvalAI
             <input dir="ltr" value={form.model} onChange={event => setForm({ ...form, model: event.target.value })}
               placeholder="gpt-5-mini" maxLength={100} disabled={busyOrLoading}/>
@@ -172,15 +173,9 @@ export default function TelegramChannelView({ token, onNotify, onOpenSettings }:
       <section className="panel full-panel">
         <div className="panel-head"><div><h2>نوشتن پیام</h2><p>ارسال دستی یا تولید پیش‌نمایش با هوش مصنوعی</p></div><Send size={20}/></div>
         <form className="telegram-form" onSubmit={send}>
-          <details className="telegram-channel-source">
-            <summary>افزودن منبع برای تولید پیش‌نمایش</summary>
-            <label>نشانی منبع<input type="url" dir="ltr" value={sourceUrl} maxLength={600}
-              onChange={event => setSourceUrl(event.target.value)} disabled={busyOrLoading} placeholder="https://…"/></label>
-            <label>متن منبع<textarea rows={3} value={source} maxLength={8000}
-              onChange={event => setSource(event.target.value)} disabled={busyOrLoading}/></label>
-          </details>
           <button type="button" className="soft-btn" disabled={busyOrLoading || !canGenerate}
-            onClick={generate}><Sparkles size={15}/>{busy === 'preview' ? 'در حال تولید…' : 'تولید پیش‌نمایش'}</button>
+            onClick={generate}><Sparkles size={15}/>{busy === 'preview' ? 'در حال دریافت و خلاصه‌سازی…' : 'تولید پیش‌نمایش خبر'}</button>
+          <p className="telegram-hint">موضوع هر بار به‌صورت تصادفی از بین فناوری و سیاست انتخاب می‌شود. متن خبر همراه پیوند منبع می‌آید.</p>
           <label>متن پیام
             <textarea rows={9} required value={draft} maxLength={4096} onChange={event => setDraft(event.target.value)}
               disabled={busyOrLoading} placeholder="پیام را بنویسید یا پیش‌نمایش تولیدشده را ویرایش کنید."/>
@@ -208,7 +203,11 @@ export default function TelegramChannelView({ token, onNotify, onOpenSettings }:
             <div><b>{post.channelTitle}</b><small>{post.mode === 'automatic' ? 'خودکار' : 'دستی'} · {date.format(new Date(post.createdAt))}</small></div>
             {post.text && <p dir="auto">{post.text}</p>}
             <div><span className={`status ${post.status === 'sent' ? 'online' : 'offline'}`}><i/>{deliveryStatus[post.status]}</span>
-              {href && <a href={href} target="_blank" rel="noreferrer">دیدن در تلگرام <ExternalLink size={12}/></a>}</div>
+              <span className="telegram-channel-history-actions">
+                {href && <a href={href} target="_blank" rel="noreferrer">دیدن در تلگرام <ExternalLink size={12}/></a>}
+                <button type="button" className="soft-btn danger-action" disabled={busyOrLoading || post.status === 'pending'}
+                  onClick={() => removeFromHistory(post)}><Trash2 size={13}/>{busy === 'delete:' + post.id ? 'در حال حذف…' : 'حذف از تاریخچه'}</button>
+              </span></div>
             {post.error && <small>{post.error}</small>}
           </li>;
         })}</ul>}
