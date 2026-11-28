@@ -1,6 +1,7 @@
 import { randomInt } from 'node:crypto';
 import Parser from 'rss-parser';
 import { ChannelError, httpsUrl } from './telegramChannelContent.js';
+import { feedImageUrl, readNewsBody } from './telegramChannelImages.js';
 
 const categories = ['technology', 'politics'] as const;
 type NewsCategory = typeof categories[number];
@@ -28,7 +29,18 @@ const feeds: Feed[] = [
     accepts: (_item, url, title, summary) => url.pathname.startsWith('/news/') && politicalTerms.test(title + ' ' + summary) },
 ];
 
-const parser = new Parser();
+type FeedMedia = { $?: { url?: string; type?: string; medium?: string; width?: string } };
+type FeedItem = {
+  media?: FeedMedia[]; thumbnails?: FeedMedia[];
+  groups?: { 'media:content'?: FeedMedia[]; 'media:thumbnail'?: FeedMedia[] }[];
+  richContent?: string;
+};
+const parser = new Parser<Record<string, never>, FeedItem>({ customFields: { item: [
+  ['media:content', 'media', { keepArray: true }],
+  ['media:thumbnail', 'thumbnails', { keepArray: true }],
+  ['media:group', 'groups', { keepArray: true }],
+  ['content:encoded', 'richContent'],
+] } });
 const maxFeedBytes = 1024 * 1024;
 const maxNewsAge = 72 * 60 * 60 * 1000;
 const publishedDate = new Intl.DateTimeFormat('fa-IR', { dateStyle: 'long', timeZone: 'Asia/Tehran' });
@@ -54,27 +66,8 @@ async function readFeed(feed: Feed, request: typeof fetch) {
   const response = await request(feed.url, {
     redirect: 'error', signal: AbortSignal.timeout(6000), headers: { Accept: 'application/rss+xml, application/atom+xml, application/xml, text/xml' },
   });
-  if (!response.ok || !response.body) {
-    await response.body?.cancel();
-    return [];
-  }
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let xml = '', size = 0;
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      size += value.byteLength;
-      if (size > maxFeedBytes) {
-        await reader.cancel();
-        return [];
-      }
-      xml += decoder.decode(value, { stream: true });
-    }
-  } finally { reader.releaseLock(); }
-  const result = await parser.parseString(xml + decoder.decode());
-  return result.items;
+  const xml = await readNewsBody(response, maxFeedBytes);
+  return xml ? (await parser.parseString(xml.toString('utf8'))).items : [];
 }
 
 export async function findChannelNews(request: typeof fetch, now: Date, exclude: Set<string>, chooseCategory = () => randomInt(categories.length)) {
@@ -85,7 +78,7 @@ export async function findChannelNews(request: typeof fetch, now: Date, exclude:
     return items.flatMap(item => {
       const article = httpsUrl(item.link || '');
       const timestamp = Date.parse(item.isoDate || item.pubDate || '');
-      if (!article || article.hostname.replace(/^www\./, '') !== feed.hostname ||
+      if (!article || article.port || article.hostname.replace(/^www\./, '') !== feed.hostname ||
         !Number.isFinite(timestamp) || timestamp < nowMs - maxNewsAge || timestamp > nowMs + 5 * 60 * 1000) return [];
       article.search = '';
       article.hash = '';
@@ -94,15 +87,22 @@ export async function findChannelNews(request: typeof fetch, now: Date, exclude:
       const summary = plainText(item.contentSnippet || item.summary || item.content || '', 2600);
       if (!title || summary.length < 25 || sourceUrl.length > 600 || exclude.has(sourceUrl) ||
         (feed.accepts && !feed.accepts(item, article, title, summary))) return [];
-      return [{ category: feed.category, publisher: feed.publisher, sourceUrl, timestamp, title, summary }];
+      return [{ category: feed.category, publisher: feed.publisher, sourceUrl, timestamp, title, summary, item }];
     });
   }));
   const latest = candidates.flat().sort((a, b) => b.timestamp - a.timestamp);
   const selected = latest.find(item => item.category === preferred) || latest[0];
   if (!selected) throw new ChannelError(502, 'خبر تازه‌ای از منابع فناوری یا سیاست دریافت نشد. کمی بعد دوباره تلاش کنید.');
-  const { category, publisher, sourceUrl, timestamp, title, summary } = selected;
+  const { category, publisher, sourceUrl, timestamp, title, summary, item } = selected;
+  const media = [
+    ...(item.media || []), ...(item.groups || []).flatMap(group => group['media:content'] || []),
+    ...(item.thumbnails || []), ...(item.groups || []).flatMap(group => group['media:thumbnail'] || []),
+  ].flatMap(image => image?.$ ? [image.$] : [])
+    .sort((left, right) => (Number(right.width) || 0) - (Number(left.width) || 0));
+  if (item.enclosure?.type?.startsWith('image/')) media.unshift(item.enclosure);
+  const imageUrl = feedImageUrl(sourceUrl, media, [item.content, item.richContent, item.summary].filter(Boolean).join('\n'));
   return {
-    topic: categoryLabels[category], sourceUrl,
+    topic: categoryLabels[category], sourceUrl, imageUrl,
     attribution: `${publisher} · ${publishedDate.format(timestamp)}`,
     source: `رسانه: ${publisher}\nتاریخ انتشار: ${new Date(timestamp).toISOString()}\nعنوان: ${title}\nخلاصهٔ خبر: ${summary}`,
   };

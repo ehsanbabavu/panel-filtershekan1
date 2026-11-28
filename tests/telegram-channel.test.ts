@@ -18,10 +18,12 @@ describe('Telegram channel publishing', () => {
   let permission = false;
   let chatType = 'channel';
   let sendResult: 'success' | 'rejected' | 'timeout' = 'success';
+  let photoResult: 'success' | 'rejected' | 'timeout' = 'success';
   let invalidAi = false;
   let category = 0;
   let feedsDown = false;
-  const sent: { chat_id: string; text: string; reply_markup?: { inline_keyboard: { text: string; url: string }[][] } }[] = [];
+  const sent: { chat_id: string; text: string; reply_markup?: { inline_keyboard: { text: string; url: string }[][] }; photo?: Blob }[] = [];
+  let photoAttempts = 0;
   const prompts: any[] = [];
   const aiAuthorization: (string | null)[] = [];
   const channelId = '-1001234567890';
@@ -31,8 +33,15 @@ describe('Telegram channel publishing', () => {
   const techUrl = 'https://arstechnica.com/tech-policy/new-chip';
   const olderTechUrl = 'https://www.theverge.com/tech/new-network';
   const politicsUrl = 'https://www.theguardian.com/politics/new-election';
+  const techImage = 'https://cdn.arstechnica.net/chip.png';
+  const politicsImage = 'https://i.guim.co.uk/election.png?w=800&h=420';
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jT9sAAAAASUVORK5CYII=', 'base64');
   const newsFetch: typeof fetch = async url => {
     if (feedsDown) throw new Error('Feed unavailable');
+    if (String(url) === politicsUrl) {
+      return new Response('<meta content="https://i.guim.co.uk/election.png?w=800&amp;h=420" property="og:image">');
+    }
+    if (String(url) === techImage || String(url) === politicsImage) return new Response(new Uint8Array(png));
     const stories: Record<string, [string, string, string][]> = {
       'feeds.arstechnica.com': [['A company presents a new chip', techUrl + '?utm_source=rss', 'Thu, 26 Nov 2026 10:00:00 GMT']],
       'www.theverge.com': [['New network made available', olderTechUrl, 'Thu, 26 Nov 2026 09:00:00 GMT']],
@@ -42,13 +51,26 @@ describe('Telegram channel publishing', () => {
     const items = feed.pathname === '/politics/rss'
       ? [['Parliament calls new election', politicsUrl, 'Thu, 26 Nov 2026 10:30:00 GMT']]
       : stories[feed.hostname] ?? [];
-    return new Response(`<rss version="2.0"><channel><title>Test feed</title>${items.map(([title, link, date]) =>
-      `<item><title>${title}</title><link>${link}</link><pubDate>${date}</pubDate><description>A detailed source summary with named facts about the story.</description></item>`).join('')}</channel></rss>`);
+    return new Response(`<rss version="2.0" xmlns:media="http://search.yahoo.com/mrss/"><channel><title>Test feed</title>${items.map(([title, link, date]) =>
+      `<item><title>${title}</title><link>${link}</link><pubDate>${date}</pubDate><description>A detailed source summary with named facts about the story.</description>${
+        link.startsWith(techUrl) ? `<media:content url="https://cdn.arstechnica.net/thumbnail.png" type="image/png" width="140"/><media:content url="${techImage}" type="image/png" width="900"/>` : ''}</item>`).join('')}</channel></rss>`);
   };
 
   const telegramFetch: typeof fetch = async (url, options) => {
-    const body = JSON.parse(String(options?.body));
     assert.ok(String(url).startsWith(`https://api.telegram.org/bot${botToken}/`));
+    if (String(url).endsWith('/sendPhoto')) {
+      photoAttempts++;
+      assert.ok(options?.body instanceof FormData);
+      const photo = options.body.get('photo');
+      assert.ok(photo instanceof Blob);
+      assert.deepEqual(Buffer.from(await photo.arrayBuffer()), png);
+      if (photoResult === 'timeout') throw new Error('Photo upload result unknown');
+      if (photoResult === 'rejected') return Response.json({ ok: false, description: 'Bad Request: PHOTO_INVALID_DIMENSIONS' }, { status: 400 });
+      sent.push({ chat_id: String(options.body.get('chat_id')), text: String(options.body.get('caption')),
+        reply_markup: JSON.parse(String(options.body.get('reply_markup'))), photo });
+      return Response.json({ ok: true, result: { message_id: sent.length } });
+    }
+    const body = JSON.parse(String(options?.body));
     switch (String(url).split('/').at(-1)) {
       case 'getChat':
         return Response.json({ ok: true, result: { id: Number(channelId), type: chatType, title: 'کانال آزمون', username: 'test_channel' } });
@@ -133,12 +155,15 @@ describe('Telegram channel publishing', () => {
     assert.equal(preview.status, 200);
     assert.equal(preview.data.text, 'یک نکتهٔ کاربردی');
     assert.equal(preview.data.sourceUrl, techUrl);
+    assert.equal(preview.data.imageUrl, techImage);
     assert.match(preview.data.attribution, /Ars Technica/);
     assert.equal(aiAuthorization.at(-1), `Bearer ${env.AVALAI_API_KEY}`);
     assert.equal(prompts.at(-1).model, settings.model);
     assert.match(JSON.parse(prompts.at(-1).messages[1].content).متن_منبع, /A company presents a new chip/);
     category = 1;
-    assert.equal((await request('preview', 'POST', settings)).data.sourceUrl, politicsUrl);
+    const politics = (await request('preview', 'POST', settings)).data;
+    assert.equal(politics.sourceUrl, politicsUrl);
+    assert.equal(politics.imageUrl, politicsImage);
     assert.equal(JSON.parse(prompts.at(-1).messages[1].content).موضوع, 'خبر سیاسی');
     category = 0;
     assert.equal(sent.length, 0);
@@ -227,6 +252,7 @@ describe('Telegram channel publishing', () => {
     assert.deepEqual(outcomes.sort(), ['already-processed', 'sent']);
     assert.equal(aiAuthorization.at(-1), 'Bearer fixture-panel-avalai-key');
     assert.equal(sent.length, 4);
+    assert.ok(sent.at(-1)?.photo);
     date = new Date('2026-11-27T16:30:00Z');
     assert.equal((await scheduled()).data.status, 'sent');
     assert.equal(sent.at(-1)?.text, 'یک نکتهٔ کاربردی');
@@ -257,14 +283,16 @@ describe('Telegram channel publishing', () => {
     assert.equal((await request('/api/proxies/bulk?scope=telegram', 'PATCH', { ids: [active.id], active: false })).status, 200);
     assert.equal((await request('/api/proxies?scope=telegram&id=' + active.id, 'PATCH', { ...active, active: true })).status, 200);
 
-    const body = { requestId: randomUUID(), revision: 3, text: 'متن ویرایش‌شده', sourceUrl: politicsUrl };
+    const body = { requestId: randomUUID(), revision: 3, text: 'متن ویرایش‌شده', sourceUrl: politicsUrl, imageUrl: politicsImage };
     assert.equal((await request('send', 'POST', { ...body, sourceUrl: 'https://example.com/invalid' })).status, 400);
+    assert.equal((await request('send', 'POST', { ...body, imageUrl: 'https://example.com/invalid.png' })).status, 400);
     const delivery = await request('send', 'POST', body);
     assert.equal(delivery.data.delivery.status, 'sent');
     assert.equal(delivery.data.delivery.sourceUrl, politicsUrl);
     assert.ok(!JSON.stringify(delivery.data).includes('pass & 2'));
     const post = sent.at(-1);
     assert.equal(post?.text, body.text);
+    assert.ok(post?.photo);
     const buttons = post!.reply_markup!.inline_keyboard.flat();
     assert.deepEqual(buttons[0], { text: 'منبع خبر', url: politicsUrl });
     assert.equal(buttons[1].text, 'اتصال به ساکس');
@@ -284,5 +312,20 @@ describe('Telegram channel publishing', () => {
 
     assert.equal((await request('/api/proxies?scope=telegram&id=' + active.id, 'DELETE')).status, 200);
     assert.deepEqual((await request('/api/proxies')).data.map((item: { host: string }) => item.host), [mobileProxy.host]);
+  });
+
+  it('uses text fallback after an explicit photo rejection and avoids a second send after an uncertain upload', async () => {
+    const body = { revision: 4, text: 'خبر آزمایشی', sourceUrl: politicsUrl, imageUrl: politicsImage };
+    const previousCount = sent.length;
+    const attempts = photoAttempts;
+    photoResult = 'rejected';
+    assert.equal((await request('send', 'POST', { ...body, requestId: randomUUID() })).data.delivery.status, 'sent');
+    assert.equal(sent.length, previousCount + 1);
+    assert.equal(sent.at(-1)?.photo, undefined);
+    assert.equal(sent.at(-1)?.reply_markup?.inline_keyboard[0][0].url, politicsUrl);
+    photoResult = 'timeout';
+    assert.equal((await request('send', 'POST', { ...body, requestId: randomUUID() })).data.delivery.status, 'uncertain');
+    assert.equal(sent.length, previousCount + 1);
+    assert.equal(photoAttempts, attempts + 2);
   });
 });

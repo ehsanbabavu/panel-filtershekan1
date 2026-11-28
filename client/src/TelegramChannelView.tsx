@@ -41,11 +41,12 @@ export default function TelegramChannelView({ token, onNotify, onOpenSettings }:
   const [panel, setPanel] = useState<ChannelPanel | null>(null);
   const [form, setForm] = useState({ target: '', model: '', automatic: false });
   const [draft, setDraft] = useState('');
-  const [source, setSource] = useState<{ sourceUrl: string; attribution: string } | null>(null);
+  const [source, setSource] = useState<{ sourceUrl: string; attribution: string; imageUrl: string | null } | null>(null);
+  const [unavailableImage, setUnavailableImage] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
-  const attempt = useRef<{ id: string; text: string; sourceUrl: string | null; revision: number; settled: boolean } | null>(null);
+  const attempt = useRef<{ id: string; text: string; sourceUrl: string | null; imageUrl: string | null; revision: number; settled: boolean } | null>(null);
 
   function applySettings(result: ChannelPanel) {
     setPanel(result);
@@ -81,10 +82,11 @@ export default function TelegramChannelView({ token, onNotify, onOpenSettings }:
 
   function generate() {
     void run('preview', async () => {
-      const result = await channelRequest<{ text: string; sourceUrl: string; attribution: string }>(
+      const result = await channelRequest<{ text: string; sourceUrl: string; attribution: string; imageUrl: string | null }>(
         token, 'preview', 'POST', { model: form.model });
       setDraft(result.text);
-      setSource({ sourceUrl: result.sourceUrl, attribution: result.attribution });
+      setSource(result);
+      setUnavailableImage(null);
       onNotify('متن پیشنهادی آماده است.');
     });
   }
@@ -103,14 +105,16 @@ export default function TelegramChannelView({ token, onNotify, onOpenSettings }:
     if (!panel || !draft.trim()) return;
     const text = draft.trim();
     const sourceUrl = source?.sourceUrl ?? null;
+    const imageUrl = source?.imageUrl ?? null;
     const revision = panel.channel.revision;
-    if (!attempt.current || attempt.current.text !== text || attempt.current.sourceUrl !== sourceUrl || attempt.current.revision !== revision) {
-      attempt.current = { id: crypto.randomUUID(), text, sourceUrl, revision, settled: false };
+    if (!attempt.current || attempt.current.text !== text || attempt.current.sourceUrl !== sourceUrl ||
+      attempt.current.imageUrl !== imageUrl || attempt.current.revision !== revision) {
+      attempt.current = { id: crypto.randomUUID(), text, sourceUrl, imageUrl, revision, settled: false };
     }
     const current = attempt.current;
     if (current.settled) return;
     void run('send', async () => {
-      const { delivery } = await channelRequest<{ delivery: Delivery }>(token, 'send', 'POST', { text, sourceUrl, revision, requestId: current.id });
+      const { delivery } = await channelRequest<{ delivery: Delivery }>(token, 'send', 'POST', { text, sourceUrl, imageUrl, revision, requestId: current.id });
       current.settled = delivery.status === 'sent' || delivery.status === 'uncertain';
       setPanel(previous => previous && { ...previous, history: [delivery, ...previous.history.filter(item => item.id !== delivery.id)].slice(0, 30) });
       if (delivery.status === 'sent') {
@@ -134,7 +138,8 @@ export default function TelegramChannelView({ token, onNotify, onOpenSettings }:
   const unchangedTarget = form.target.trim() === (saved?.channelId || '');
   const canSend = panel?.channelReady && unchangedTarget && draft.trim()
     && !(attempt.current?.settled && attempt.current.text === draft.trim() &&
-      attempt.current.sourceUrl === (source?.sourceUrl ?? null) && attempt.current.revision === saved?.revision);
+      attempt.current.sourceUrl === (source?.sourceUrl ?? null) && attempt.current.imageUrl === (source?.imageUrl ?? null) &&
+      attempt.current.revision === saved?.revision);
   const autoAvailable = panel?.aiConfigured && panel.schedulerConfigured && Boolean(form.model.trim());
 
   return <div className="telegram-page telegram-channel-page">
@@ -183,7 +188,10 @@ export default function TelegramChannelView({ token, onNotify, onOpenSettings }:
         <form className="telegram-form" onSubmit={send}>
           <button type="button" className="soft-btn" disabled={busyOrLoading || !canGenerate}
             onClick={generate}><Sparkles size={15}/>{busy === 'preview' ? 'در حال دریافت و خلاصه‌سازی…' : 'تولید پیش‌نمایش خبر'}</button>
-          <p className="telegram-hint">موضوع هر بار به‌صورت تصادفی از بین فناوری و سیاست انتخاب می‌شود. دکمهٔ منبع و پیوند ساکس هنگام انتشار زیر خبر می‌آیند.</p>
+          <p className="telegram-hint">موضوع بین فناوری و سیاست انتخاب می‌شود. عکس از همان خبر برداشته می‌شود و دکمهٔ منبع و پیوند ساکس زیر خبر می‌آیند.</p>
+          {source?.imageUrl && source.imageUrl !== unavailableImage && <img className="telegram-channel-news-image"
+            src={source.imageUrl} alt="عکس منبع خبر" referrerPolicy="no-referrer" onError={() => setUnavailableImage(source.imageUrl)}/>}
+          {source?.imageUrl && draft.trim().length > 1024 && <p className="telegram-hint">تلگرام برای متن همراه عکس تا ۱۰۲۴ نویسه می‌پذیرد. این متن به‌تنهایی ارسال می‌شود.</p>}
           <label>متن پیام
             <textarea rows={9} required value={draft} maxLength={4096} onChange={event => {
               setDraft(event.target.value);

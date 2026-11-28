@@ -47,7 +47,7 @@ export async function generateChannelMessage({ model, topic, source }: {
   try {
     if (typeof raw !== 'string' || raw.length > 10_000) throw new Error();
     const text: unknown = JSON.parse(raw)?.text;
-    return channelMessage(typeof text === 'string' ? text.replace(/https?:\/\/[^\s<>]+/gi, '') : text, 1600, 'تولیدشده');
+    return channelMessage(typeof text === 'string' ? text.replace(/https?:\/\/[^\s<>]+/gi, '') : text, 1024, 'تولیدشده');
   } catch {
     throw new ChannelError(502, 'متن قابل انتشار از AvalAI دریافت نشد.');
   }

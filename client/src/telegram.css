@@ -112,6 +112,7 @@
 .telegram-channel-page { display: grid; grid-template-columns: minmax(0, 1fr); gap: 18px; }
 .telegram-channel-page > .full-panel { min-height: 0; }
 .telegram-channel-page .user-form-error { margin: 0; }
+.telegram-channel-news-image { display: block; width: 100%; max-height: 220px; object-fit: contain; border-radius: 9px; margin-top: 12px; background: #f7f5ff; }
 .telegram-channel-page textarea {
   box-sizing: border-box;
   width: 100%;
