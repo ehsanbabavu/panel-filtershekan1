@@ -1,4 +1,5 @@
 import type { MobileDatabase } from './presence.js';
+import { proxyTable } from './proxyList.js';
 
 function validId(value: unknown): value is number | string {
   if (typeof value === 'number') return Number.isSafeInteger(value) && value > 0;
@@ -17,14 +18,15 @@ export function createProxyBulkHandler(database: MobileDatabase) {
       return res.status(400).json({ message: 'بین ۱ تا ۱۰٬۰۰۰ ساکس معتبر را انتخاب کنید.' });
     }
     const ids = [...new Set<string>(body.ids.map(String))];
+    const table = proxyTable(req);
     if (req.method === 'DELETE') {
-      const result = await database.query('DELETE FROM proxy_servers WHERE id=ANY($1::bigint[]) RETURNING id', [ids]);
+      const result = await database.query(`DELETE FROM ${table} WHERE id=ANY($1::bigint[]) RETURNING id`, [ids]);
       return res.status(200).json({ count: result.rows.length, ids: result.rows.map(row => String(row.id)) });
     }
     if (typeof body.active !== 'boolean') {
       return res.status(400).json({ message: 'وضعیت فعال یا غیرفعال معتبر نیست.' });
     }
-    const result = await database.query(`UPDATE proxy_servers SET active=$2,updated_at=NOW()
+    const result = await database.query(`UPDATE ${table} SET active=$2,updated_at=NOW()
       WHERE id=ANY($1::bigint[]) RETURNING id,active,updated_at AS "updatedAt"`, [ids, body.active]);
     return res.status(200).json({ count: result.rows.length, ids: result.rows.map(row => String(row.id)), proxies: result.rows });
   };

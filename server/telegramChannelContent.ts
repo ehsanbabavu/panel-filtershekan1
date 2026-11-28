@@ -17,8 +17,8 @@ export function httpsUrl(value: string) {
   } catch { return null; }
 }
 
-export async function generateChannelMessage({ model, topic, source, sourceUrl, attribution }: {
-  model: string; topic: string; source: string; sourceUrl: string; attribution: string;
+export async function generateChannelMessage({ model, topic, source }: {
+  model: string; topic: string; source: string;
 }, { apiKey, baseUrl: configuredBaseUrl }: { apiKey: string; baseUrl?: string }, request: typeof fetch) {
   if (!apiKey) throw new ChannelError(409, 'کلید AvalAI را از بخش «تلگرام ← تنظیمات» ثبت کنید.');
   const baseUrl = httpsUrl((configuredBaseUrl?.trim() || 'https://api.avalai.ir/v1').replace(/\/+$/, ''));
@@ -46,8 +46,8 @@ export async function generateChannelMessage({ model, topic, source, sourceUrl, 
 
   try {
     if (typeof raw !== 'string' || raw.length > 10_000) throw new Error();
-    const text = channelMessage(JSON.parse(raw)?.text, 1600, 'تولیدشده');
-    return `${text}\n\nمنبع: ${attribution}\n${sourceUrl}`;
+    const text: unknown = JSON.parse(raw)?.text;
+    return channelMessage(typeof text === 'string' ? text.replace(/https?:\/\/[^\s<>]+/gi, '') : text, 1600, 'تولیدشده');
   } catch {
     throw new ChannelError(502, 'متن قابل انتشار از AvalAI دریافت نشد.');
   }

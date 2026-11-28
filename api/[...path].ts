@@ -9,6 +9,7 @@ import { settleMobileBluePalPayment } from '../server/mobile.js';
 import { getMaintenanceMode, setMaintenanceMode } from '../server/serviceControl.js';
 import { createProxyImportHandler } from '../server/proxyImport.js';
 import { createProxyBulkHandler } from '../server/proxyBulk.js';
+import { createProxyListHandler } from '../server/proxyList.js';
 import { createSubscriptionUsageResetHandler } from '../server/subscriptionUsage.js';
 import { createTelegramHandler } from '../server/telegram.js';
 
@@ -143,11 +144,7 @@ return async function handler(req: any, res: any) {
       return reply(res, 200, result.rows[0]);
     }
 
-    if (pathname === '/api/proxies' && method === 'GET') {
-      const result = await database.query(`SELECT id,name,host,port,username,password,active,updated_at AS "updatedAt"
-        FROM proxy_servers ORDER BY id ASC`);
-      return reply(res, 200, result.rows);
-    }
+    if (pathname === '/api/proxies') return await createProxyListHandler(database)(req, res);
 
     if (pathname === '/api/proxies/import' && method === 'POST') {
       return await createProxyImportHandler(database)(req,res);
@@ -155,41 +152,6 @@ return async function handler(req: any, res: any) {
 
     if (pathname === '/api/proxies/bulk') {
       return await createProxyBulkHandler(database)(req,res);
-    }
-
-    if (pathname === '/api/proxies' && method === 'DELETE') {
-      const id = Number(new URL(req.url || '/', 'http://localhost').searchParams.get('id'));
-      if (!Number.isSafeInteger(id) || id < 1) return reply(res, 400, { message: 'شناسه ساکس معتبر نیست.' });
-      const result = await database.query('DELETE FROM proxy_servers WHERE id=$1 RETURNING id', [id]);
-      if (!result.rows[0]) return reply(res, 404, { message: 'ساکس پیدا نشد.' });
-      return reply(res, 200, { success: true, id: result.rows[0].id });
-    }
-
-    if (pathname === '/api/proxies' && (method === 'POST' || method === 'PATCH')) {
-      const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
-      const name = typeof body.name === 'string' ? body.name.trim() : '';
-      const host = typeof body.host === 'string' ? body.host.trim() : '';
-      const port = Number(body.port);
-      const username = typeof body.username === 'string' ? body.username : '';
-      const password = typeof body.password === 'string' ? body.password : '';
-      const active = body.active === undefined ? true : body.active;
-      if (name.length < 2 || name.length > 80 || !host || host.length > 253 || /\s/.test(host) ||
-          !Number.isInteger(port) || port < 1 || port > 65535 || username.length > 255 || password.length > 512 || typeof active !== 'boolean') {
-        return reply(res, 400, { message: 'مشخصات ساکس معتبر نیست.' });
-      }
-      if (method === 'POST') {
-        const result = await database.query(`INSERT INTO proxy_servers(name,host,port,username,password,active)
-          VALUES($1,$2,$3,$4,$5,$6) RETURNING id,name,host,port,username,password,active,updated_at AS "updatedAt"`,
-        [name, host, port, username, password, active]);
-        return reply(res, 201, result.rows[0]);
-      }
-      const id = Number(new URL(req.url || '/', 'http://localhost').searchParams.get('id'));
-      if (!Number.isSafeInteger(id) || id < 1) return reply(res, 400, { message: 'شناسه ساکس معتبر نیست.' });
-      const result = await database.query(`UPDATE proxy_servers SET name=$2,host=$3,port=$4,username=$5,password=$6,active=$7,updated_at=NOW()
-        WHERE id=$1 RETURNING id,name,host,port,username,password,active,updated_at AS "updatedAt"`,
-      [id, name, host, port, username, password, active]);
-      if (!result.rows[0]) return reply(res, 404, { message: 'ساکس پیدا نشد.' });
-      return reply(res, 200, result.rows[0]);
     }
 
     if (pathname === '/api/user-subscriptions' && method === 'GET') {

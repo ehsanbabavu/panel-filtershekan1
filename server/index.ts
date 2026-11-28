@@ -9,6 +9,7 @@ import { handleBluePalAdminRequest } from './bluepal.js';
 import { getMaintenanceMode, setMaintenanceMode } from './serviceControl.js';
 import { createProxyImportHandler } from './proxyImport.js';
 import { createProxyBulkHandler } from './proxyBulk.js';
+import { createProxyListHandler } from './proxyList.js';
 import { createSubscriptionUsageResetHandler } from './subscriptionUsage.js';
 import { createTelegramHandler } from './telegram.js';
 import { createTelegramChannelPublisher } from './telegramChannel.js';
@@ -151,9 +152,10 @@ app.get('/api/users', async (_req, res, next) => {
   } catch (error) { next(error); }
 });
 
-app.get('/api/proxies',async(_req,res,next)=>{try{
-  const result=await pool.query(`SELECT id,name,host,port,username,password,active,updated_at AS "updatedAt" FROM proxy_servers ORDER BY id ASC`);res.json(result.rows);
-}catch(error){next(error);}});
+const handleProxyList = createProxyListHandler(pool);
+app.all('/api/proxies', async (req, res, next) => {
+  try { await handleProxyList(req, res); } catch (error) { next(error); }
+});
 
 app.post('/api/proxies/import', async (req,res,next) => {
   try { await createProxyImportHandler(pool)(req,res); } catch (error) { next(error); }
@@ -162,22 +164,6 @@ app.post('/api/proxies/import', async (req,res,next) => {
 app.all('/api/proxies/bulk', async (req,res,next) => {
   try { await createProxyBulkHandler(pool)(req,res); } catch (error) { next(error); }
 });
-
-app.post('/api/proxies',async(req,res,next)=>{try{
-  const {name,host,port,username='',password='',active=true}=req.body??{},n=String(name||'').trim(),h=String(host||'').trim(),p=Number(port),u=String(username),pw=String(password);
-  if(n.length<2||n.length>80||!h||h.length>253||/\s/.test(h)||!Number.isInteger(p)||p<1||p>65535||u.length>255||pw.length>512||typeof active!=='boolean')return res.status(400).json({message:'مشخصات ساکس معتبر نیست.'});
-  const result=await pool.query(`INSERT INTO proxy_servers(name,host,port,username,password,active) VALUES($1,$2,$3,$4,$5,$6)
-    RETURNING id,name,host,port,username,password,active,updated_at AS "updatedAt"`,[n,h,p,u,pw,active]);res.status(201).json(result.rows[0]);
-}catch(error){next(error);}});
-
-app.patch('/api/proxies',async(req,res,next)=>{try{
-  const id=Number(req.query.id),{name,host,port,username='',password='',active}=req.body??{},n=String(name||'').trim(),h=String(host||'').trim(),p=Number(port),u=String(username),pw=String(password);
-  if(!Number.isSafeInteger(id)||id<1||n.length<2||n.length>80||!h||h.length>253||/\s/.test(h)||!Number.isInteger(p)||p<1||p>65535||u.length>255||pw.length>512||typeof active!=='boolean')return res.status(400).json({message:'مشخصات ساکس معتبر نیست.'});
-  const result=await pool.query(`UPDATE proxy_servers SET name=$2,host=$3,port=$4,username=$5,password=$6,active=$7,updated_at=NOW() WHERE id=$1
-    RETURNING id,name,host,port,username,password,active,updated_at AS "updatedAt"`,[id,n,h,p,u,pw,active]);if(!result.rows[0])return res.status(404).json({message:'ساکس پیدا نشد.'});res.json(result.rows[0]);
-}catch(error){next(error);}});
-
-app.delete('/api/proxies',async(req,res,next)=>{try{const id=Number(req.query.id);if(!Number.isSafeInteger(id)||id<1)return res.status(400).json({message:'شناسه ساکس معتبر نیست.'});const result=await pool.query('DELETE FROM proxy_servers WHERE id=$1 RETURNING id',[id]);if(!result.rows[0])return res.status(404).json({message:'ساکس پیدا نشد.'});res.json({success:true,id:result.rows[0].id});}catch(error){next(error);}});
 
 app.get('/api/subscriptions', async (_req, res, next) => {
   try { const result=await pool.query(`SELECT p.id,p.name,p.description,p.price_irr AS "priceIrr",p.quota_bytes AS "quotaBytes",

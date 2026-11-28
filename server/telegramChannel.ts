@@ -2,23 +2,25 @@ import { timingSafeEqual } from 'node:crypto';
 import type { MobileDatabase } from './presence.js';
 import { createTelegramClient, TelegramError } from './telegramApi.js';
 import { channelMessage, ChannelError, generateChannelMessage } from './telegramChannelContent.js';
-import { findChannelNews } from './telegramChannelNews.js';
+import { channelSourceUrl, findChannelNews } from './telegramChannelNews.js';
 
 type Channel = {
   channelId: string; channelTitle: string; channelUsername: string; botId: string | null;
   model: string; automatic: boolean; revision: number;
 };
 type Bot = { id: string | null; token: string; username: string };
+type OutgoingPost = { text: string; sourceUrl: string | null };
 type Delivery = {
   id: string; channelId: string; channelTitle: string; mode: 'manual' | 'automatic';
   status: 'pending' | 'sent' | 'failed' | 'uncertain'; text: string; error: string; messageId: string | null; createdAt: string;
+  sourceUrl: string | null;
 };
 
 const channelColumns = `channel_id AS "channelId",channel_title AS "channelTitle",channel_username AS "channelUsername",
   bot_id::text AS "botId",model,automatic,revision`;
 const historyColumns = `id,channel_id AS "channelId",channel_title AS "channelTitle",mode,
   CASE WHEN status='pending' AND created_at < NOW()-INTERVAL '2 minutes' THEN 'uncertain' ELSE status END AS status,
-  text,error,message_id::text AS "messageId",created_at AS "createdAt"`;
+  text,error,source_url AS "sourceUrl",message_id::text AS "messageId",created_at AS "createdAt"`;
 
 export const telegramChannelSchema = `
   CREATE TABLE IF NOT EXISTS telegram_channel_settings (
@@ -38,6 +40,11 @@ export const telegramChannelSchema = `
   ALTER TABLE telegram_channel_deliveries ADD COLUMN IF NOT EXISTS source_url TEXT;
   CREATE INDEX IF NOT EXISTS telegram_channel_deliveries_created_idx ON telegram_channel_deliveries(created_at DESC);
   CREATE TABLE IF NOT EXISTS telegram_channel_requests (id TEXT PRIMARY KEY);
+  CREATE TABLE IF NOT EXISTS telegram_channel_proxies (
+    id BIGSERIAL PRIMARY KEY, name TEXT NOT NULL, host TEXT NOT NULL,
+    port INTEGER NOT NULL CHECK (port BETWEEN 1 AND 65535), username TEXT NOT NULL DEFAULT '', password TEXT NOT NULL DEFAULT '',
+    active BOOLEAN NOT NULL DEFAULT TRUE, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  );
 `;
 
 function modelName(value: unknown) {
@@ -101,7 +108,22 @@ export function createTelegramChannelPublisher(database: MobileDatabase, initial
       AND created_at >= NOW()-INTERVAL '7 days'`, [channelId]);
     const news = await findChannelNews(newsFetch, now(), new Set(recent.rows.map(row => row.source_url)), chooseNewsCategory);
     const text = await generateChannelMessage({ model, ...news }, { apiKey, baseUrl: env.AVALAI_BASE_URL }, aiFetch);
-    return { text, sourceUrl: news.sourceUrl };
+    return { text, sourceUrl: news.sourceUrl, attribution: news.attribution };
+  }
+
+  async function newsButtons(sourceUrl: string) {
+    const { rows: [proxy] } = await database.query<{ host: string; port: number; username: string; password: string }>(
+      'SELECT host,port,username,password FROM telegram_channel_proxies WHERE active ORDER BY RANDOM() LIMIT 1');
+    const buttons = [{ text: 'منبع خبر', url: sourceUrl }];
+    if (proxy) {
+      const socks = new URL('https://t.me/socks');
+      socks.searchParams.set('server', proxy.host.replace(/^\[(.*)\]$/, '$1'));
+      socks.searchParams.set('port', String(proxy.port));
+      if (proxy.username) socks.searchParams.set('user', proxy.username);
+      if (proxy.password) socks.searchParams.set('pass', proxy.password);
+      buttons.push({ text: 'اتصال به ساکس', url: socks.href.replace(/\+/g, '%20') });
+    }
+    return { inline_keyboard: buttons.map(button => [button]) };
   }
 
   const assertBot = (bot: Bot) => {
@@ -171,8 +193,8 @@ export function createTelegramChannelPublisher(database: MobileDatabase, initial
     return { history: (await readHistory()).rows };
   }
 
-  async function send(id: string, channel: Channel, bot: Bot, manualText?: string) {
-    const mode = manualText === undefined ? 'automatic' : 'manual';
+  async function send(id: string, channel: Channel, bot: Bot, manual?: OutgoingPost) {
+    const mode = manual ? 'manual' : 'automatic';
     const claimed = await database.query(`WITH destination AS (
       SELECT c.channel_id,c.channel_title FROM telegram_channel_settings c
       JOIN telegram_settings b ON b.id=1 AND c.bot_id=b.bot_id AND b.bot_token=$4
@@ -181,25 +203,22 @@ export function createTelegramChannelPublisher(database: MobileDatabase, initial
     ), claimed AS (
       INSERT INTO telegram_channel_requests(id) SELECT $1 FROM destination ON CONFLICT DO NOTHING RETURNING id
     )
-    INSERT INTO telegram_channel_deliveries(id,channel_id,channel_title,mode,text)
-      SELECT claimed.id,destination.channel_id,destination.channel_title,$2,$3 FROM claimed CROSS JOIN destination
-      RETURNING id`, [id, mode, manualText ?? '', bot.token, channel.revision]);
+    INSERT INTO telegram_channel_deliveries(id,channel_id,channel_title,mode,text,source_url)
+      SELECT claimed.id,destination.channel_id,destination.channel_title,$2,$3,$6 FROM claimed CROSS JOIN destination
+      RETURNING id`, [id, mode, manual?.text ?? '', bot.token, channel.revision, manual?.sourceUrl ?? null]);
     if (!claimed.rowCount) {
       const existing = await readDelivery(id);
       if (mode === 'automatic') return null;
-      if (existing?.channelId === channel.channelId && existing.text === manualText) return existing;
+      if (manual && existing?.channelId === channel.channelId && existing.text === manual.text && existing.sourceUrl === manual.sourceUrl) return existing;
       throw new ChannelError(409, 'تنظیمات کانال تغییر کرده یا این درخواست قبلاً ثبت شده است. صفحه را تازه کنید.');
     }
 
     let sending = false;
+    let hasProxyLink = false;
     try {
-      let text = manualText;
-      let sourceUrl: string | null = null;
-      if (text === undefined) {
-        const news = await generate(channel.model, channel.channelId);
-        text = news.text;
-        sourceUrl = news.sourceUrl;
-      }
+      const { text, sourceUrl } = manual ?? await generate(channel.model, channel.channelId);
+      const replyMarkup = sourceUrl ? await newsButtons(sourceUrl) : undefined;
+      hasProxyLink = Boolean(replyMarkup && replyMarkup.inline_keyboard.length > 1);
       const current = await database.query(`UPDATE telegram_channel_deliveries SET text=$2,source_url=$6 WHERE id=$1
         AND EXISTS (SELECT 1 FROM telegram_channel_settings c JOIN telegram_settings b ON b.id=1
           AND c.bot_id=b.bot_id AND b.bot_token=$3 WHERE c.id=1 AND c.revision=$4 AND ($5='manual' OR c.automatic))`,
@@ -207,14 +226,16 @@ export function createTelegramChannelPublisher(database: MobileDatabase, initial
       if (!current.rowCount) throw new ChannelError(409, 'تنظیمات کانال یا ربات هنگام آماده‌سازی پیام تغییر کرد.');
       sending = true;
       const sent = await callTelegram(bot.token, 'sendMessage', { chat_id: channel.channelId, text,
-        link_preview_options: { is_disabled: true } });
+        link_preview_options: { is_disabled: true }, ...(replyMarkup ? { reply_markup: replyMarkup } : {}) });
       if (!Number.isSafeInteger(sent?.message_id) || sent.message_id < 1) {
         throw new TelegramError('شناسهٔ پیام از تلگرام دریافت نشد.', true);
       }
       await database.query(`UPDATE telegram_channel_deliveries SET status='sent',message_id=$2 WHERE id=$1`, [id, sent.message_id]);
     } catch (error) {
       const uncertain = sending && (!(error instanceof TelegramError) || error.deliveryUncertain);
-      const message = error instanceof ChannelError || error instanceof TelegramError ? error.message : 'ثبت نتیجهٔ انتشار انجام نشد.';
+      const message = error instanceof TelegramError
+        ? hasProxyLink ? 'ارسال خبر همراه پیوند ساکس به تلگرام انجام نشد.' : error.message
+        : error instanceof ChannelError ? error.message : 'ثبت نتیجهٔ انتشار انجام نشد.';
       await database.query(`UPDATE telegram_channel_deliveries SET status=$2,error=$3 WHERE id=$1 AND status='pending'`,
         [id, uncertain ? 'uncertain' : 'failed', message]).catch(() => undefined);
     }
@@ -266,21 +287,21 @@ export function createTelegramChannelPublisher(database: MobileDatabase, initial
       if (action === 'preview' && method === 'POST') {
         const model = modelName(body?.model);
         const channel = await readChannel();
-        const { text } = await generate(model, channel.channelId);
-        return reply(200, { text });
+        return reply(200, await generate(model, channel.channelId));
       }
 
       const [channel, bot] = await Promise.all([readChannel(), readBot()]);
       if (action === 'settings' && method === 'PUT') return reply(200, await save(body, channel, bot));
       if (action === 'send' && method === 'POST') {
         const text = channelMessage(body?.text, 4096, 'پیام');
+        const sourceUrl = body?.sourceUrl == null ? null : channelSourceUrl(body.sourceUrl);
         if (typeof body?.requestId !== 'string' || !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(body.requestId)) {
           throw new ChannelError(400, 'شناسهٔ درخواست انتشار معتبر نیست.');
         }
         if (body?.revision !== channel.revision) throw new ChannelError(409, 'تنظیمات کانال تغییر کرده است. صفحه را تازه کنید.');
         if (!channel.channelId || channel.botId !== bot.id) throw new ChannelError(409, 'کانال را برای ربات فعلی ذخیره کنید.');
         assertBot(bot);
-        return reply(200, { delivery: await send('manual:' + body.requestId.toLowerCase(), channel, bot, text) });
+        return reply(200, { delivery: await send('manual:' + body.requestId.toLowerCase(), channel, bot, { text, sourceUrl }) });
       }
 
       if (action === 'verify' && method === 'POST') {

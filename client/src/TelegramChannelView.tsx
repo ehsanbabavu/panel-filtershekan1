@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { ExternalLink, Link2, Megaphone, RefreshCw, Save, Send, Sparkles, Trash2 } from 'lucide-react';
 import { readApiResponse } from './apiResponse';
+import SocksView from './SocksView';
 import './telegram.css';
 
 type Delivery = {
   id: string; channelId: string; channelTitle: string; mode: 'manual' | 'automatic';
   status: 'pending' | 'sent' | 'failed' | 'uncertain'; text: string; error: string; messageId: string | null; createdAt: string;
+  sourceUrl: string | null;
 };
 type ChannelPanel = {
   channel: { channelId: string; channelTitle: string; channelUsername: string; model: string;
@@ -39,10 +41,11 @@ export default function TelegramChannelView({ token, onNotify, onOpenSettings }:
   const [panel, setPanel] = useState<ChannelPanel | null>(null);
   const [form, setForm] = useState({ target: '', model: '', automatic: false });
   const [draft, setDraft] = useState('');
+  const [source, setSource] = useState<{ sourceUrl: string; attribution: string } | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
-  const attempt = useRef<{ id: string; text: string; revision: number; settled: boolean } | null>(null);
+  const attempt = useRef<{ id: string; text: string; sourceUrl: string | null; revision: number; settled: boolean } | null>(null);
 
   function applySettings(result: ChannelPanel) {
     setPanel(result);
@@ -78,8 +81,10 @@ export default function TelegramChannelView({ token, onNotify, onOpenSettings }:
 
   function generate() {
     void run('preview', async () => {
-      const result = await channelRequest<{ text: string }>(token, 'preview', 'POST', { model: form.model });
+      const result = await channelRequest<{ text: string; sourceUrl: string; attribution: string }>(
+        token, 'preview', 'POST', { model: form.model });
       setDraft(result.text);
+      setSource({ sourceUrl: result.sourceUrl, attribution: result.attribution });
       onNotify('متن پیشنهادی آماده است.');
     });
   }
@@ -97,18 +102,20 @@ export default function TelegramChannelView({ token, onNotify, onOpenSettings }:
     event.preventDefault();
     if (!panel || !draft.trim()) return;
     const text = draft.trim();
+    const sourceUrl = source?.sourceUrl ?? null;
     const revision = panel.channel.revision;
-    if (!attempt.current || attempt.current.text !== text || attempt.current.revision !== revision) {
-      attempt.current = { id: crypto.randomUUID(), text, revision, settled: false };
+    if (!attempt.current || attempt.current.text !== text || attempt.current.sourceUrl !== sourceUrl || attempt.current.revision !== revision) {
+      attempt.current = { id: crypto.randomUUID(), text, sourceUrl, revision, settled: false };
     }
     const current = attempt.current;
     if (current.settled) return;
     void run('send', async () => {
-      const { delivery } = await channelRequest<{ delivery: Delivery }>(token, 'send', 'POST', { text, revision, requestId: current.id });
+      const { delivery } = await channelRequest<{ delivery: Delivery }>(token, 'send', 'POST', { text, sourceUrl, revision, requestId: current.id });
       current.settled = delivery.status === 'sent' || delivery.status === 'uncertain';
       setPanel(previous => previous && { ...previous, history: [delivery, ...previous.history.filter(item => item.id !== delivery.id)].slice(0, 30) });
       if (delivery.status === 'sent') {
         setDraft('');
+        setSource(null);
         attempt.current = null;
         onNotify('پیام در کانال منتشر شد.');
       } else if (delivery.status === 'failed') {
@@ -126,7 +133,8 @@ export default function TelegramChannelView({ token, onNotify, onOpenSettings }:
   const canGenerate = panel?.aiConfigured && form.model.trim();
   const unchangedTarget = form.target.trim() === (saved?.channelId || '');
   const canSend = panel?.channelReady && unchangedTarget && draft.trim()
-    && !(attempt.current?.settled && attempt.current.text === draft.trim() && attempt.current.revision === saved?.revision);
+    && !(attempt.current?.settled && attempt.current.text === draft.trim() &&
+      attempt.current.sourceUrl === (source?.sourceUrl ?? null) && attempt.current.revision === saved?.revision);
   const autoAvailable = panel?.aiConfigured && panel.schedulerConfigured && Boolean(form.model.trim());
 
   return <div className="telegram-page telegram-channel-page">
@@ -175,11 +183,18 @@ export default function TelegramChannelView({ token, onNotify, onOpenSettings }:
         <form className="telegram-form" onSubmit={send}>
           <button type="button" className="soft-btn" disabled={busyOrLoading || !canGenerate}
             onClick={generate}><Sparkles size={15}/>{busy === 'preview' ? 'در حال دریافت و خلاصه‌سازی…' : 'تولید پیش‌نمایش خبر'}</button>
-          <p className="telegram-hint">موضوع هر بار به‌صورت تصادفی از بین فناوری و سیاست انتخاب می‌شود. متن خبر همراه پیوند منبع می‌آید.</p>
+          <p className="telegram-hint">موضوع هر بار به‌صورت تصادفی از بین فناوری و سیاست انتخاب می‌شود. دکمهٔ منبع و پیوند ساکس هنگام انتشار زیر خبر می‌آیند.</p>
           <label>متن پیام
-            <textarea rows={9} required value={draft} maxLength={4096} onChange={event => setDraft(event.target.value)}
+            <textarea rows={9} required value={draft} maxLength={4096} onChange={event => {
+              setDraft(event.target.value);
+              if (!event.target.value.trim()) setSource(null);
+            }}
               disabled={busyOrLoading} placeholder="پیام را بنویسید یا پیش‌نمایش تولیدشده را ویرایش کنید."/>
           </label>
+          {source && <div className="telegram-channel-history-actions">
+            <a href={source.sourceUrl} target="_blank" rel="noreferrer">منبع خبر · {source.attribution}</a>
+            <button type="button" className="soft-btn" disabled={busyOrLoading} onClick={() => setSource(null)}>برداشتن پیوند</button>
+          </div>}
           <div className="telegram-channel-compose">
             <span>{draft.length.toLocaleString('fa-IR')} از ۴۰۹۶ نویسه</span>
             <button className="primary-btn" disabled={busyOrLoading || !canSend}><Send size={15}/>{busy === 'send' ? 'در حال ارسال…' : 'ارسال به کانال'}</button>
@@ -199,12 +214,15 @@ export default function TelegramChannelView({ token, onNotify, onOpenSettings }:
       {!panel?.history.length ? <p className="empty-state">{loading ? 'در حال دریافت…' : 'هنوز ارسالی ثبت نشده است.'}</p>
         : <ul className="telegram-channel-history">{panel.history.map(post => {
           const href = postLink(post, saved?.channelId === post.channelId ? saved.channelUsername : '');
+          const text = post.sourceUrl && post.text.endsWith('\n' + post.sourceUrl)
+            ? post.text.slice(0, -(post.sourceUrl.length + 1)) : post.text;
           return <li key={post.id}>
             <div><b>{post.channelTitle}</b><small>{post.mode === 'automatic' ? 'خودکار' : 'دستی'} · {date.format(new Date(post.createdAt))}</small></div>
-            {post.text && <p dir="auto">{post.text}</p>}
+            {text && <p dir="auto">{text}</p>}
             <div><span className={`status ${post.status === 'sent' ? 'online' : 'offline'}`}><i/>{deliveryStatus[post.status]}</span>
               <span className="telegram-channel-history-actions">
                 {href && <a href={href} target="_blank" rel="noreferrer">دیدن در تلگرام <ExternalLink size={12}/></a>}
+                {post.sourceUrl && <a href={post.sourceUrl} target="_blank" rel="noreferrer">منبع خبر <ExternalLink size={12}/></a>}
                 <button type="button" className="soft-btn danger-action" disabled={busyOrLoading || post.status === 'pending'}
                   onClick={() => removeFromHistory(post)}><Trash2 size={13}/>{busy === 'delete:' + post.id ? 'در حال حذف…' : 'حذف از تاریخچه'}</button>
               </span></div>
@@ -212,5 +230,6 @@ export default function TelegramChannelView({ token, onNotify, onOpenSettings }:
           </li>;
         })}</ul>}
     </section>
+    <SocksView token={token} onNotify={onNotify} telegram/>
   </div>;
 }

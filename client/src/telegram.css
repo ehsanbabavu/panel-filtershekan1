@@ -109,7 +109,7 @@
 .telegram-delete-message:hover:not(:disabled) { background: #fff0ef; color: #a52b31; }
 .telegram-delete-message:disabled { opacity: .45; }
 
-.telegram-channel-page { display: grid; gap: 18px; }
+.telegram-channel-page { display: grid; grid-template-columns: minmax(0, 1fr); gap: 18px; }
 .telegram-channel-page > .full-panel { min-height: 0; }
 .telegram-channel-page .user-form-error { margin: 0; }
 .telegram-channel-page textarea {
