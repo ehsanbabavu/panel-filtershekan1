@@ -136,9 +136,8 @@
 .telegram-channel-destination a, .telegram-channel-history a { display: inline-flex; align-items: center; gap: 4px; }
 .telegram-form .telegram-channel-toggle { flex-direction: row; align-items: center; }
 .telegram-form .telegram-channel-toggle input { width: 16px; height: 16px; accent-color: #6c5de1; }
-.telegram-channel-source, .telegram-channel-history li { border: 1px solid #eeedf4; border-radius: 10px; padding: 12px; }
-.telegram-channel-source { margin-bottom: 12px; font-size: 11px; color: #606073; }
-.telegram-channel-source summary { cursor: pointer; }
+.telegram-channel-history li { border: 1px solid #eeedf4; border-radius: 10px; padding: 12px; }
+.telegram-channel-history-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
 .telegram-channel-compose { color: #606073; }
 .telegram-channel-history { display: grid; gap: 8px; padding: 0; margin: 0; list-style: none; }
 .telegram-channel-history li { display: grid; gap: 8px; font-size: 11px; }
