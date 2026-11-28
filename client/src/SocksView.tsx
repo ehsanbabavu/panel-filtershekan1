@@ -5,7 +5,9 @@ import { readApiResponse } from './apiResponse';
 
 type ProxyEntry = { id: string; name: string; host: string; port: number; username: string; password: string; active: boolean; updatedAt?: string };
 
-export default function SocksView({ token, onNotify }: { token: string; onNotify: (text: string) => void }) {
+export default function SocksView({ token, onNotify, telegram = false }: {
+  token: string; onNotify: (text: string) => void; telegram?: boolean;
+}) {
   const [proxies, setProxies] = useState<ProxyEntry[]>([]);
   const [draft, setDraft] = useState<Partial<ProxyEntry> | null>(null);
   const [visiblePasswords, setVisiblePasswords] = useState<string[]>([]);
@@ -30,7 +32,8 @@ export default function SocksView({ token, onNotify }: { token: string; onNotify
   }, [proxies]);
 
   const request = async <T,>(url: string, method = 'GET', body?: unknown, signal?: AbortSignal): Promise<T> => {
-    const response = await fetch(url, {
+    const scopedUrl = telegram ? url + (url.includes('?') ? '&' : '?') + 'scope=telegram' : url;
+    const response = await fetch(scopedUrl, {
       method, headers: { Authorization: `Bearer ${token}`, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }), cache: 'no-store', signal,
     });
@@ -44,7 +47,7 @@ export default function SocksView({ token, onNotify }: { token: string; onNotify
     setLoading(true); setLoadError('');
     refresh(controller.signal).catch(error => { if (!controller.signal.aborted) setLoadError(error.message); }).finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
-  }, [token]);
+  }, [token, telegram]);
 
   const save = async (event: React.FormEvent) => {
     event.preventDefault(); if (!draft || busy) return;
@@ -111,7 +114,9 @@ export default function SocksView({ token, onNotify }: { token: string; onNotify
 
   return <><section className="panel full-panel">
     <div className="panel-head socks-panel-head">
-      <div><h2>مدیریت ساکس‌ها</h2><p>اپ موبایل بعد از ورود، یکی از ساکس‌های فعال را به‌صورت تصادفی دریافت می‌کند.</p></div>
+      <div><h2>{telegram ? 'ساکس' : 'مدیریت ساکس‌ها'}</h2><p>{telegram
+        ? 'از ساکس‌های فعال این جدول، یکی تصادفی زیر هر خبر قرار می‌گیرد. لینک و اطلاعات اتصال برای اعضای کانال قابل مشاهده‌اند.'
+        : 'اپ موبایل بعد از ورود، یکی از ساکس‌های فعال را به‌صورت تصادفی دریافت می‌کند.'}</p></div>
       <div className="socks-panel-actions">
         <input ref={importInput} type="file" accept=".txt,text/plain" hidden aria-label="فایل TXT ساکس‌ها" onChange={importFile} disabled={loading || busy}/>
         <button type="button" className="soft-btn" onClick={() => importInput.current?.click()} disabled={loading || busy}><Upload size={16}/>{importing ? 'در حال آپلود...' : 'آپلود فایل TXT'}</button>

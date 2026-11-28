@@ -34,6 +34,16 @@ const maxNewsAge = 72 * 60 * 60 * 1000;
 const publishedDate = new Intl.DateTimeFormat('fa-IR', { dateStyle: 'long', timeZone: 'Asia/Tehran' });
 const categoryLabels: Record<NewsCategory, string> = { technology: 'فناوری', politics: 'خبر سیاسی' };
 
+export function channelSourceUrl(value: unknown) {
+  const url = typeof value === 'string' && value.length <= 600 && httpsUrl(value);
+  if (!url || url.port || !feeds.some(feed => feed.hostname === url.hostname.replace(/^www\./, ''))) {
+    throw new ChannelError(400, 'پیوند منبع خبر معتبر نیست.');
+  }
+  url.search = '';
+  url.hash = '';
+  return url.href;
+}
+
 function plainText(value: unknown, limit: number) {
   return typeof value === 'string'
     ? value.replace(/<[^>]*>/g, ' ').replace(/&nbsp;/gi, ' ').replace(/\s+/g, ' ').trim().slice(0, limit)

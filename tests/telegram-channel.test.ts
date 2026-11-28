@@ -4,6 +4,7 @@ import { once } from 'node:events';
 import type { Server } from 'node:http';
 import { after, before, describe, it } from 'node:test';
 import express from 'express';
+import { createApiHandler } from '../api/[...path]';
 import { initializeSchema } from '../server/database';
 import { createTelegramChannelPublisher } from '../server/telegramChannel';
 import { createTestDatabase } from './database';
@@ -20,7 +21,7 @@ describe('Telegram channel publishing', () => {
   let invalidAi = false;
   let category = 0;
   let feedsDown = false;
-  const sent: { chat_id: string; text: string }[] = [];
+  const sent: { chat_id: string; text: string; reply_markup?: { inline_keyboard: { text: string; url: string }[][] } }[] = [];
   const prompts: any[] = [];
   const aiAuthorization: (string | null)[] = [];
   const channelId = '-1001234567890';
@@ -85,6 +86,7 @@ describe('Telegram channel publishing', () => {
     const app = express();
     app.use(express.json());
     app.all(['/api/telegram', '/api/telegram/channel/scheduled'], publisher.handle);
+    app.all('/api/proxies*', createApiHandler(postgres.database, async () => {}));
     server = app.listen(0, '127.0.0.1');
     await once(server, 'listening');
     const address = server.address();
@@ -98,7 +100,8 @@ describe('Telegram channel publishing', () => {
   });
 
   async function request(action = 'settings', method = 'GET', body?: unknown, token = adminToken) {
-    const path = action === 'scheduled' ? '/api/telegram/channel/scheduled' : '/api/telegram?action=channel-' + action;
+    const path = action.startsWith('/') ? action : action === 'scheduled'
+      ? '/api/telegram/channel/scheduled' : '/api/telegram?action=channel-' + action;
     const response = await fetch(origin + path, {
       method, headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
       body: body === undefined ? undefined : JSON.stringify(body),
@@ -128,13 +131,14 @@ describe('Telegram channel publishing', () => {
   it('summarizes the latest eligible story in either category and skips generation when feeds are unavailable', async () => {
     const preview = await request('preview', 'POST', settings);
     assert.equal(preview.status, 200);
-    assert.ok(preview.data.text.endsWith(techUrl));
-    assert.match(preview.data.text, /Ars Technica/);
+    assert.equal(preview.data.text, 'یک نکتهٔ کاربردی');
+    assert.equal(preview.data.sourceUrl, techUrl);
+    assert.match(preview.data.attribution, /Ars Technica/);
     assert.equal(aiAuthorization.at(-1), `Bearer ${env.AVALAI_API_KEY}`);
     assert.equal(prompts.at(-1).model, settings.model);
     assert.match(JSON.parse(prompts.at(-1).messages[1].content).متن_منبع, /A company presents a new chip/);
     category = 1;
-    assert.ok((await request('preview', 'POST', settings)).data.text.endsWith(politicsUrl));
+    assert.equal((await request('preview', 'POST', settings)).data.sourceUrl, politicsUrl);
     assert.equal(JSON.parse(prompts.at(-1).messages[1].content).موضوع, 'خبر سیاسی');
     category = 0;
     assert.equal(sent.length, 0);
@@ -225,7 +229,8 @@ describe('Telegram channel publishing', () => {
     assert.equal(sent.length, 4);
     date = new Date('2026-11-27T16:30:00Z');
     assert.equal((await scheduled()).data.status, 'sent');
-    assert.ok(sent.at(-1)?.text.endsWith(olderTechUrl));
+    assert.equal(sent.at(-1)?.text, 'یک نکتهٔ کاربردی');
+    assert.deepEqual(sent.at(-1)?.reply_markup?.inline_keyboard, [[{ text: 'منبع خبر', url: olderTechUrl }]]);
     const snapshot = await request();
     assert.equal(snapshot.data.history.filter((post: any) => post.mode === 'automatic').length, 2);
     assert.equal((await request('history', 'DELETE', { id: 'daily:2026-11-27' })).status, 200);
@@ -235,5 +240,49 @@ describe('Telegram channel publishing', () => {
     date = new Date('2026-11-28T16:30:00Z');
     assert.equal((await scheduled()).data.status, 'disabled');
     assert.equal(sent.length, 5);
+  });
+
+  it('attaches a clickable source and one active SOCKS from the channel table to a generated post', async () => {
+    const mobileProxy = { name: 'Mobile only', host: 'private-proxy.example', port: 1080, active: true };
+    assert.equal((await request('/api/proxies', 'POST', mobileProxy)).status, 201);
+    const inactive = { name: 'Disabled', host: 'disabled.example', port: 1080, active: false };
+    const saved = await request('/api/proxies?scope=telegram', 'POST', inactive);
+    assert.equal(saved.status, 201);
+    const imported = await request('/api/proxies/import?scope=telegram', 'POST', { content: 'demo-proxy.example:1080:user+1:pass & 2' });
+    assert.equal(imported.status, 201);
+    const active = imported.data.proxies[0];
+    assert.equal((await request('/api/proxies')).data.length, 1);
+    assert.equal((await request('/api/proxies?scope=telegram')).data.length, 2);
+    assert.equal((await request('/api/proxies?scope=telegram', 'GET', undefined, 'invalid')).status, 401);
+    assert.equal((await request('/api/proxies/bulk?scope=telegram', 'PATCH', { ids: [active.id], active: false })).status, 200);
+    assert.equal((await request('/api/proxies?scope=telegram&id=' + active.id, 'PATCH', { ...active, active: true })).status, 200);
+
+    const body = { requestId: randomUUID(), revision: 3, text: 'متن ویرایش‌شده', sourceUrl: politicsUrl };
+    assert.equal((await request('send', 'POST', { ...body, sourceUrl: 'https://example.com/invalid' })).status, 400);
+    const delivery = await request('send', 'POST', body);
+    assert.equal(delivery.data.delivery.status, 'sent');
+    assert.equal(delivery.data.delivery.sourceUrl, politicsUrl);
+    assert.ok(!JSON.stringify(delivery.data).includes('pass & 2'));
+    const post = sent.at(-1);
+    assert.equal(post?.text, body.text);
+    const buttons = post!.reply_markup!.inline_keyboard.flat();
+    assert.deepEqual(buttons[0], { text: 'منبع خبر', url: politicsUrl });
+    assert.equal(buttons[1].text, 'اتصال به ساکس');
+    const proxyUrl = new URL(buttons[1].url);
+    assert.equal(proxyUrl.origin + proxyUrl.pathname, 'https://t.me/socks');
+    assert.deepEqual(Object.fromEntries(proxyUrl.searchParams), {
+      server: 'demo-proxy.example', port: '1080', user: 'user+1', pass: 'pass & 2',
+    });
+    assert.equal((await request('send', 'POST', body)).data.delivery.id, delivery.data.delivery.id);
+    assert.equal(sent.length, 6);
+
+    permission = true;
+    assert.equal((await request('settings', 'PUT', { ...settings, target: channelId, automatic: true, revision: 3 })).status, 200);
+    assert.equal((await request('scheduled', 'GET', undefined, env.CRON_SECRET)).data.status, 'sent');
+    assert.equal(sent.length, 7);
+    assert.deepEqual(sent.at(-1)?.reply_markup?.inline_keyboard[1], [buttons[1]]);
+
+    assert.equal((await request('/api/proxies?scope=telegram&id=' + active.id, 'DELETE')).status, 200);
+    assert.deepEqual((await request('/api/proxies')).data.map((item: { host: string }) => item.host), [mobileProxy.host]);
   });
 });

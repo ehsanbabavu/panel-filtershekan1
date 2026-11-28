@@ -13,7 +13,7 @@ it('emitted Vercel API handlers load with the native Node ESM loader', async () 
   const output = await mkdtemp(join(work, 'run-'));
   const sources = ['api/mobile.ts', 'api/[...path].ts', 'server/database.ts', 'server/mobile.ts', 'server/presence.ts',
     'server/bluepal.ts', 'server/serviceControl.ts', 'server/proxyImport.ts', 'shared/proxyImport.ts',
-    'server/proxyBulk.ts', 'api/proxies/import.ts', 'api/proxies/bulk.ts',
+    'server/proxyBulk.ts', 'server/proxyList.ts', 'api/proxies/import.ts', 'api/proxies/bulk.ts',
     'server/subscriptionUsage.ts', 'api/user-subscriptions/reset-usage.ts', 'server/telegram.ts', 'server/telegramMenu.ts',
     'server/telegramSupport.ts', 'server/telegramLink.ts', 'server/userPassword.ts', 'api/telegram.ts',
     'server/telegramApi.ts', 'server/telegramChannel.ts', 'server/telegramChannelContent.ts', 'server/telegramChannelNews.ts'];
