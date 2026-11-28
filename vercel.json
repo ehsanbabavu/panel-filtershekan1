@@ -1,6 +1,6 @@
 {
   "functions": {
-    "api/telegram.ts": { "maxDuration": 60 }
+    "api/telegram.ts": { "maxDuration": 90 }
   },
   "crons": [
     { "path": "/api/telegram/channel/scheduled", "schedule": "30 16 * * *" }

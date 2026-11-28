@@ -3,24 +3,25 @@ import type { MobileDatabase } from './presence.js';
 import { createTelegramClient, TelegramError } from './telegramApi.js';
 import { channelMessage, ChannelError, generateChannelMessage } from './telegramChannelContent.js';
 import { channelSourceUrl, findChannelNews } from './telegramChannelNews.js';
+import { downloadNewsImage, newsImageUrl, readArticleImage } from './telegramChannelImages.js';
 
 type Channel = {
   channelId: string; channelTitle: string; channelUsername: string; botId: string | null;
   model: string; automatic: boolean; revision: number;
 };
 type Bot = { id: string | null; token: string; username: string };
-type OutgoingPost = { text: string; sourceUrl: string | null };
+type OutgoingPost = { text: string; sourceUrl: string | null; imageUrl: string | null };
 type Delivery = {
   id: string; channelId: string; channelTitle: string; mode: 'manual' | 'automatic';
   status: 'pending' | 'sent' | 'failed' | 'uncertain'; text: string; error: string; messageId: string | null; createdAt: string;
-  sourceUrl: string | null;
+  sourceUrl: string | null; imageUrl: string | null;
 };
 
 const channelColumns = `channel_id AS "channelId",channel_title AS "channelTitle",channel_username AS "channelUsername",
   bot_id::text AS "botId",model,automatic,revision`;
 const historyColumns = `id,channel_id AS "channelId",channel_title AS "channelTitle",mode,
   CASE WHEN status='pending' AND created_at < NOW()-INTERVAL '2 minutes' THEN 'uncertain' ELSE status END AS status,
-  text,error,source_url AS "sourceUrl",message_id::text AS "messageId",created_at AS "createdAt"`;
+  text,error,source_url AS "sourceUrl",image_url AS "imageUrl",message_id::text AS "messageId",created_at AS "createdAt"`;
 
 export const telegramChannelSchema = `
   CREATE TABLE IF NOT EXISTS telegram_channel_settings (
@@ -38,6 +39,7 @@ export const telegramChannelSchema = `
     message_id BIGINT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   );
   ALTER TABLE telegram_channel_deliveries ADD COLUMN IF NOT EXISTS source_url TEXT;
+  ALTER TABLE telegram_channel_deliveries ADD COLUMN IF NOT EXISTS image_url TEXT;
   CREATE INDEX IF NOT EXISTS telegram_channel_deliveries_created_idx ON telegram_channel_deliveries(created_at DESC);
   CREATE TABLE IF NOT EXISTS telegram_channel_requests (id TEXT PRIMARY KEY);
   CREATE TABLE IF NOT EXISTS telegram_channel_proxies (
@@ -107,8 +109,11 @@ export function createTelegramChannelPublisher(database: MobileDatabase, initial
       WHERE channel_id=$1 AND source_url IS NOT NULL AND status IN ('sent','uncertain')
       AND created_at >= NOW()-INTERVAL '7 days'`, [channelId]);
     const news = await findChannelNews(newsFetch, now(), new Set(recent.rows.map(row => row.source_url)), chooseNewsCategory);
-    const text = await generateChannelMessage({ model, ...news }, { apiKey, baseUrl: env.AVALAI_BASE_URL }, aiFetch);
-    return { text, sourceUrl: news.sourceUrl, attribution: news.attribution };
+    const [text, imageUrl] = await Promise.all([
+      generateChannelMessage({ model, topic: news.topic, source: news.source }, { apiKey, baseUrl: env.AVALAI_BASE_URL }, aiFetch),
+      news.imageUrl ?? readArticleImage(news.sourceUrl, newsFetch),
+    ]);
+    return { text, sourceUrl: news.sourceUrl, attribution: news.attribution, imageUrl };
   }
 
   async function newsButtons(sourceUrl: string) {
@@ -124,6 +129,26 @@ export function createTelegramChannelPublisher(database: MobileDatabase, initial
       buttons.push({ text: 'اتصال به ساکس', url: socks.href.replace(/\+/g, '%20') });
     }
     return { inline_keyboard: buttons.map(button => [button]) };
+  }
+
+  async function publishPost(bot: Bot, channelId: string, text: string,
+    replyMarkup: Awaited<ReturnType<typeof newsButtons>> | undefined, photo: Awaited<ReturnType<typeof downloadNewsImage>>) {
+    if (photo) {
+      const body = new FormData();
+      body.set('chat_id', channelId);
+      body.set('photo', photo.blob, photo.filename);
+      body.set('caption', text);
+      if (replyMarkup) body.set('reply_markup', JSON.stringify(replyMarkup));
+      try {
+        return await callTelegram(bot.token, 'sendPhoto', body);
+      } catch (error) {
+        // Fall back only after an explicit media rejection. A timeout may have delivered the post.
+        if (!(error instanceof TelegramError) || error.deliveryUncertain || error.status !== 400 ||
+            !/photo|image|file too|media|caption/i.test(error.message)) throw error;
+      }
+    }
+    return callTelegram(bot.token, 'sendMessage', { chat_id: channelId, text,
+      link_preview_options: { is_disabled: true }, ...(replyMarkup ? { reply_markup: replyMarkup } : {}) });
   }
 
   const assertBot = (bot: Bot) => {
@@ -203,30 +228,33 @@ export function createTelegramChannelPublisher(database: MobileDatabase, initial
     ), claimed AS (
       INSERT INTO telegram_channel_requests(id) SELECT $1 FROM destination ON CONFLICT DO NOTHING RETURNING id
     )
-    INSERT INTO telegram_channel_deliveries(id,channel_id,channel_title,mode,text,source_url)
-      SELECT claimed.id,destination.channel_id,destination.channel_title,$2,$3,$6 FROM claimed CROSS JOIN destination
-      RETURNING id`, [id, mode, manual?.text ?? '', bot.token, channel.revision, manual?.sourceUrl ?? null]);
+    INSERT INTO telegram_channel_deliveries(id,channel_id,channel_title,mode,text,source_url,image_url)
+      SELECT claimed.id,destination.channel_id,destination.channel_title,$2,$3,$6,$7 FROM claimed CROSS JOIN destination
+      RETURNING id`, [id, mode, manual?.text ?? '', bot.token, channel.revision, manual?.sourceUrl ?? null, manual?.imageUrl ?? null]);
     if (!claimed.rowCount) {
       const existing = await readDelivery(id);
       if (mode === 'automatic') return null;
-      if (manual && existing?.channelId === channel.channelId && existing.text === manual.text && existing.sourceUrl === manual.sourceUrl) return existing;
+      if (manual && existing?.channelId === channel.channelId && existing.text === manual.text &&
+          existing.sourceUrl === manual.sourceUrl && existing.imageUrl === manual.imageUrl) return existing;
       throw new ChannelError(409, 'تنظیمات کانال تغییر کرده یا این درخواست قبلاً ثبت شده است. صفحه را تازه کنید.');
     }
 
     let sending = false;
     let hasProxyLink = false;
     try {
-      const { text, sourceUrl } = manual ?? await generate(channel.model, channel.channelId);
-      const replyMarkup = sourceUrl ? await newsButtons(sourceUrl) : undefined;
+      const { text, sourceUrl, imageUrl } = manual ?? await generate(channel.model, channel.channelId);
+      const [replyMarkup, photo] = await Promise.all([
+        sourceUrl ? newsButtons(sourceUrl) : undefined,
+        imageUrl && text.length <= 1024 ? downloadNewsImage(imageUrl, newsFetch) : null,
+      ]);
       hasProxyLink = Boolean(replyMarkup && replyMarkup.inline_keyboard.length > 1);
-      const current = await database.query(`UPDATE telegram_channel_deliveries SET text=$2,source_url=$6 WHERE id=$1
+      const current = await database.query(`UPDATE telegram_channel_deliveries SET text=$2,source_url=$6,image_url=$7 WHERE id=$1
         AND EXISTS (SELECT 1 FROM telegram_channel_settings c JOIN telegram_settings b ON b.id=1
           AND c.bot_id=b.bot_id AND b.bot_token=$3 WHERE c.id=1 AND c.revision=$4 AND ($5='manual' OR c.automatic))`,
-      [id, text, bot.token, channel.revision, mode, sourceUrl]);
+      [id, text, bot.token, channel.revision, mode, sourceUrl, imageUrl]);
       if (!current.rowCount) throw new ChannelError(409, 'تنظیمات کانال یا ربات هنگام آماده‌سازی پیام تغییر کرد.');
       sending = true;
-      const sent = await callTelegram(bot.token, 'sendMessage', { chat_id: channel.channelId, text,
-        link_preview_options: { is_disabled: true }, ...(replyMarkup ? { reply_markup: replyMarkup } : {}) });
+      const sent = await publishPost(bot, channel.channelId, text, replyMarkup, photo);
       if (!Number.isSafeInteger(sent?.message_id) || sent.message_id < 1) {
         throw new TelegramError('شناسهٔ پیام از تلگرام دریافت نشد.', true);
       }
@@ -295,13 +323,15 @@ export function createTelegramChannelPublisher(database: MobileDatabase, initial
       if (action === 'send' && method === 'POST') {
         const text = channelMessage(body?.text, 4096, 'پیام');
         const sourceUrl = body?.sourceUrl == null ? null : channelSourceUrl(body.sourceUrl);
+        const imageUrl = sourceUrl && body?.imageUrl != null ? newsImageUrl(body.imageUrl, sourceUrl) : null;
+        if (body?.imageUrl != null && !imageUrl) throw new ChannelError(400, 'پیوند عکس خبر معتبر نیست.');
         if (typeof body?.requestId !== 'string' || !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(body.requestId)) {
           throw new ChannelError(400, 'شناسهٔ درخواست انتشار معتبر نیست.');
         }
         if (body?.revision !== channel.revision) throw new ChannelError(409, 'تنظیمات کانال تغییر کرده است. صفحه را تازه کنید.');
         if (!channel.channelId || channel.botId !== bot.id) throw new ChannelError(409, 'کانال را برای ربات فعلی ذخیره کنید.');
         assertBot(bot);
-        return reply(200, { delivery: await send('manual:' + body.requestId.toLowerCase(), channel, bot, { text, sourceUrl }) });
+        return reply(200, { delivery: await send('manual:' + body.requestId.toLowerCase(), channel, bot, { text, sourceUrl, imageUrl }) });
       }
 
       if (action === 'verify' && method === 'POST') {
