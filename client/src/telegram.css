@@ -7,12 +7,24 @@
 .telegram-form input,.telegram-chat-search input{width:100%;min-width:0;border:1px solid #e7e6ef;border-radius:9px;padding:0 12px;background:#fff;color:#343448}
 .telegram-form input{height:42px;font:inherit}
 .telegram-form input:disabled{background:#f7f7fa;color:#777}
+.telegram-form input[type="file"] { height: auto; padding: 8px; }
+.telegram-form input[type="file"]::file-selector-button {
+  border: 0;
+  border-radius: 6px;
+  padding: 5px 8px;
+  margin-inline-end: 8px;
+  background: #f1efff;
+  color: #6255c7;
+  font: inherit;
+}
+.telegram-apk-progress { display: block; width: 100%; height: 8px; accent-color: var(--purple); }
 .telegram-form-actions,.telegram-connection-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:18px}
 .telegram-form-actions{justify-content:flex-end}
 .telegram-page button{display:inline-flex;align-items:center;justify-content:center;gap:6px}
 .telegram-page button:disabled{opacity:.55;cursor:default}
 .telegram-hint{font-size:10px;line-height:1.9;color:#9391a3;margin:13px 0 0}
 .telegram-details{margin:8px 0 24px}
+.telegram-apk-details { margin: 8px 0 0; }
 .telegram-details>div{display:flex;justify-content:space-between;gap:16px;padding:14px 0;border-bottom:1px solid #efedf5;font-size:11px}
 .telegram-details dt{color:#9391a3}
 .telegram-details dd{margin:0;overflow-wrap:anywhere}

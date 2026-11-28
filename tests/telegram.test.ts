@@ -5,6 +5,7 @@ import express from 'express';
 import { createApiHandler } from '../api/[...path]';
 import { initializeSchema } from '../server/database';
 import { createTelegramHandler } from '../server/telegram';
+import { ANDROID_APK_MAX_BYTES, ANDROID_APK_PART_BYTES } from '../shared/androidApk';
 import { createTestDatabase } from './database';
 
 describe('Telegram connection and webhook inbox', () => {
@@ -44,6 +45,12 @@ describe('Telegram connection and webhook inbox', () => {
     });
     return { code: response.status, headers: response.headers, body: await response.json() };
   }
+  async function apkPart(id: string, part: number, data?: Uint8Array<ArrayBuffer>) {
+    const params = new URLSearchParams({ action: 'android-apk', id, part: String(part) });
+    return fetch(base + '/api/telegram?' + params, data ? {
+      method: 'PUT', headers: { Authorization: 'Bearer ' + adminToken, 'Content-Type': 'application/octet-stream' }, body: data,
+    } : { headers: { Authorization: 'Bearer ' + adminToken } });
+  }
   async function settings() { return (await postgres.database.query<any>('SELECT * FROM telegram_settings WHERE id=1')).rows[0]; }
   async function connect() {
     assert.equal((await request('settings', 'PUT', { botToken, webhookUrl })).code, 200);
@@ -70,7 +77,9 @@ describe('Telegram connection and webhook inbox', () => {
     await initializeSchema(postgres.database);
     await postgres.database.query(`INSERT INTO sessions(token,admin_username,expires_at)
       SELECT $1,username,NOW()+INTERVAL '1 hour' FROM admins LIMIT 1`, [adminToken]);
-    const app = express(); app.use(express.json());
+    const app = express();
+    app.put('/api/telegram', express.raw({ limit: ANDROID_APK_PART_BYTES }));
+    app.use(express.json());
     app.use('/fallback', createApiHandler(postgres.database, async () => {}));
     app.all('/api/telegram', createTelegramHandler(postgres.database, async () => {}, fakeTelegram));
     server = createServer(app);
@@ -100,6 +109,59 @@ describe('Telegram connection and webhook inbox', () => {
     }
     assert.equal((await request('connect', 'POST')).code, 400);
     assert.deepEqual(calls, []);
+  });
+
+  it('publishes only a complete APK and removes the prior file after replacement', async () => {
+    // ZIP fixture containing an AndroidManifest.xml entry.
+    const original = Buffer.from('UEsDBBQAAAAAAAAAIVBInR1MHgAAAB4AAAATAAAAQW5kcm9pZE1hbmlmZXN0LnhtbDxtYW5pZmVzdCBwYWNrYWdlPSJhcGsudGVzdCIvPlBLAQIUABQAAAAAAAAAIVBInR1MHgAAAB4AAAATAAAAAAAAAAAAAAAAAAAAAABBbmRyb2lkTWFuaWZlc3QueG1sUEsFBgAAAAABAAEAQQAAAE8AAAAAAA==', 'base64');
+    const action = 'android-apk';
+    assert.equal((await request(action, 'GET', undefined, '')).code, 401);
+    assert.equal((await request(action, 'POST', { size: original.length }, '')).code, 401);
+    assert.equal((await request(action, 'GET', undefined, adminToken, true)).body.apk, null);
+    assert.equal((await request(action, 'POST', { size: ANDROID_APK_MAX_BYTES + 1 })).code, 413);
+
+    const first = await request(action, 'POST', { size: original.length, name: 'another-name.apk' });
+    assert.equal(first.code, 201);
+    const firstId = first.body.id;
+    const uploaded = await apkPart(firstId, 0, new Uint8Array(original));
+    assert.equal(uploaded.status, 200);
+    assert.equal((await uploaded.json()).apk.name, 'Ariya-connect.apk');
+
+    const directoryOffset = original.readUInt32LE(original.length - 6);
+    const padding = Buffer.alloc(2 * ANDROID_APK_PART_BYTES + 1024 * 1024, 7);
+    const replacement = Buffer.concat([original.subarray(0, directoryOffset), padding, original.subarray(directoryOffset)]);
+    replacement.writeUInt32LE(directoryOffset + padding.length, replacement.length - 6);
+    const pending = await request(action, 'POST', { size: replacement.length });
+    assert.equal(pending.code, 201);
+    const replacementId = pending.body.id;
+    const firstPart = new Uint8Array(replacement.subarray(0, ANDROID_APK_PART_BYTES));
+    assert.equal((await apkPart(replacementId, 1, firstPart)).status, 409);
+    assert.equal((await apkPart(replacementId, 0, firstPart)).status, 200);
+    assert.equal((await apkPart(replacementId, 0)).status, 404);
+    assert.equal((await request(action)).body.apk.id, firstId);
+    assert.deepEqual(Buffer.from(await (await apkPart(firstId, 0)).arrayBuffer()), original);
+
+    for (let offset = ANDROID_APK_PART_BYTES; offset < replacement.length; offset += ANDROID_APK_PART_BYTES) {
+      const bytes = new Uint8Array(replacement.subarray(offset, offset + ANDROID_APK_PART_BYTES));
+      assert.equal((await apkPart(replacementId, offset / ANDROID_APK_PART_BYTES, bytes)).status, 200);
+    }
+    assert.equal((await request(action)).body.apk.id, replacementId);
+    assert.equal((await apkPart(firstId, 0)).status, 404);
+    assert.equal((await postgres.database.query('SELECT 1 FROM telegram_apk_parts WHERE apk_id=$1', [firstId])).rowCount, 0);
+
+    const downloaded: Buffer[] = [];
+    for (let part = 0; part * ANDROID_APK_PART_BYTES < replacement.length; part++) {
+      const response = await apkPart(replacementId, part);
+      assert.equal(response.status, 200);
+      downloaded.push(Buffer.from(await response.arrayBuffer()));
+    }
+    assert.deepEqual(Buffer.concat(downloaded), replacement);
+
+    const invalid = Buffer.from(original);
+    invalid.write('OrdinaryArchive.xml', invalid.lastIndexOf('AndroidManifest.xml'));
+    const failed = await request(action, 'POST', { size: invalid.length });
+    assert.equal((await apkPart(failed.body.id, 0, new Uint8Array(invalid))).status, 400);
+    assert.equal((await request(action)).body.apk.id, replacementId);
   });
 
   it('validates token and public HTTPS callback URL without overwriting a valid configuration', async () => {

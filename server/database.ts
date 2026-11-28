@@ -3,6 +3,7 @@ import { Pool } from 'pg';
 import { telegramLinkSchema } from './telegramLink.js';
 import { telegramSupportSchema } from './telegramSupport.js';
 import { telegramChannelSchema } from './telegramChannel.js';
+import { telegramApkSchema } from './telegramApk.js';
 
 export const pool = new Pool({
   connectionString: process.env.DATABASE_URL || process.env.POSTGRES_URL,
@@ -55,6 +56,7 @@ export async function initializeSchema(database: Pick<Pool, 'query'>) {
     );
     INSERT INTO telegram_settings(id) VALUES(1) ON CONFLICT(id) DO NOTHING;
     ${telegramChannelSchema}
+    ${telegramApkSchema}
     ${telegramLinkSchema}
     CREATE TABLE IF NOT EXISTS telegram_messages (
       id BIGSERIAL PRIMARY KEY, bot_id BIGINT NOT NULL, update_id BIGINT NOT NULL, message_id BIGINT NOT NULL,

@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { KeyRound, Save } from 'lucide-react';
+import TelegramAndroidApk from './TelegramAndroidApk';
 import './telegram.css';
 
 type AiSettings = { saved: boolean; configured: boolean };
@@ -70,5 +71,6 @@ export default function TelegramSettingsView({ token, onNotify }: { token: strin
         </div>
       </form>
     </section>
+    <TelegramAndroidApk token={token} onNotify={onNotify}/>
   </div>;
 }

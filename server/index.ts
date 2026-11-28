@@ -13,6 +13,7 @@ import { createProxyListHandler } from './proxyList.js';
 import { createSubscriptionUsageResetHandler } from './subscriptionUsage.js';
 import { createTelegramHandler } from './telegram.js';
 import { createTelegramChannelPublisher } from './telegramChannel.js';
+import { ANDROID_APK_PART_BYTES } from '../shared/androidApk.js';
 
 const app = express();
 const port = Number(process.env.PORT || 3001);
@@ -20,6 +21,14 @@ export { initializeDatabase } from './database.js';
 
 app.use('/api/proxies/import', express.json({ limit: '2mb' }));
 app.use('/api/proxies/bulk', express.json({ limit: '1mb' }));
+const parseApkPart = express.raw({ type: 'application/octet-stream', limit: ANDROID_APK_PART_BYTES, inflate: false });
+app.put('/api/telegram', (req, res, next) => {
+  if (req.query.action !== 'android-apk') return next();
+  parseApkPart(req, res, error => {
+    if (!error) return next();
+    return res.status(error.status === 413 ? 413 : 400).json({ message: 'بخش بارگذاری‌شده معتبر نیست.' });
+  });
+});
 app.use(express.json({ verify: (req: any, _res, buffer) => { req.rawBody = buffer.toString('utf8'); } }));
 app.all(['/api/mobile', '/api/mobile/:action'], createMobileHandler(pool, initializeDatabase));
 app.all(['/api/telegram', '/api/telegram/channel/scheduled'], createTelegramHandler(pool, initializeDatabase));

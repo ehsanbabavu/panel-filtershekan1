@@ -4,6 +4,7 @@ import { telegramIdentity } from './telegramLink.js';
 import { createTelegramMenuReply, telegramMenuAction } from './telegramMenu.js';
 import { createTelegramClient, TelegramError } from './telegramApi.js';
 import { createTelegramChannelPublisher } from './telegramChannel.js';
+import { handleTelegramApk } from './telegramApk.js';
 
 function chatIdOf(value: unknown) {
   const id = typeof value === 'string' || typeof value === 'number' ? String(value) : '';
@@ -149,6 +150,9 @@ export function createTelegramHandler(database: MobileDatabase, initialize: () =
       if (!token || !(await database.query('SELECT 1 FROM sessions WHERE token=$1 AND expires_at>NOW()', [token])).rowCount) {
         return reply(401, { message: 'برای ادامه با حساب مدیر وارد شوید.' });
       }
+      if (action === 'android-apk') return await handleTelegramApk(database, method,
+        req.query?.id ?? url.searchParams.get('id'), req.query?.part ?? url.searchParams.get('part'), req.body, res);
+
       const row = (await database.query<any>('SELECT * FROM telegram_settings WHERE id=1')).rows[0];
       if (action === 'settings' && method === 'GET') return reply(200, settingsOf(row));
 
